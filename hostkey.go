@@ -150,10 +150,17 @@ func (f HostKeyFile) HostKey() ([]byte, error) {
 	}
 	want := HostSecretMachineID(mid)
 	if !hmac.Equal(raw[:16], want[:]) {
+		clear(raw)
 		return nil, fmt.Errorf("%w: %s", ErrHostKeyMachine, path)
 	}
 	return raw[16:], nil
 }
+
+// ephemeralKey marks a HostKeySource whose HostKey result is a private copy
+// that the caller may overwrite once it has used it.
+type ephemeralKey interface{ ephemeralKey() }
+
+func (HostKeyFile) ephemeralKey() {}
 
 // CreateHostKey generates a host secret for machineID at path the way
 // systemd-creds setup does (cu.c:453-514): 16 bytes of HostSecretMachineID

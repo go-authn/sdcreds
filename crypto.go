@@ -67,6 +67,9 @@ func deriveKey(id KeyID, src HostKeySource, scope *Scope) ([]byte, error) {
 			return nil, fmt.Errorf("%w: empty host key", ErrInvalid)
 		}
 		h.Write(hk)
+		if _, ok := src.(ephemeralKey); ok {
+			clear(hk) // the secret itself does not outlive the hash of it
+		}
 	}
 	k := h.Sum(nil)
 	if id.Scoped() {

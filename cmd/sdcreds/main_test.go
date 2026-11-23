@@ -45,6 +45,28 @@ func run(t *testing.T, stdin string, args ...string) (string, string, error) {
 	return runIn(t, strings.NewReader(stdin), args...)
 }
 
+// hardenCalls counts the calls to hardenProcess made by the commands run.
+var hardenCalls int
+
+// The commands that handle plaintext secrets lower their exposure first.
+func TestSecretCommandsHardenTheProcess(t *testing.T) {
+	dir := env(t)
+	enc := mustRun(t, "x", "encrypt", "--with-key=null", "--name=")
+	for _, c := range []struct {
+		args []string
+		want int
+	}{
+		{[]string{"decrypt", "--allow-null", "--name=", "-", filepath.Join(dir, "o")}, 1},
+		{[]string{"s6-run", "--service=web", "--user=u", "--source=" + dir, "--base-dir=" + dir, "--", "c"}, 1},
+	} {
+		hardenCalls = 0
+		run(t, enc, c.args...)
+		if hardenCalls != c.want {
+			t.Errorf("%v: hardenProcess called %d times", c.args[0], hardenCalls)
+		}
+	}
+}
+
 // runIn is run with any reader; a panic is an error, so that a missing guard
 // fails the assertion about what it should have said.
 func runIn(t *testing.T, stdin io.Reader, args ...string) (so, se string, err error) {
@@ -55,6 +77,9 @@ func runIn(t *testing.T, stdin io.Reader, args ...string) (so, se string, err er
 	cmd.SetOut(&out)
 	cmd.SetErr(&errb)
 	cmd.SetArgs(args)
+	// The tests must not make the test binary non-dumpable or traceless.
+	defer func(h func()) { hardenProcess = h }(hardenProcess)
+	hardenProcess = func() { hardenCalls++ }
 	defer func() {
 		if p := recover(); p != nil {
 			err = fmt.Errorf("panic: %v", p)

@@ -71,9 +71,11 @@ func readHostSecret(path string) ([]byte, error) {
 	buf := make([]byte, size+1)
 	n, err := readFull(f, buf)
 	if err != nil && err != io.ErrUnexpectedEOF {
+		clear(buf)
 		return nil, &os.PathError{Op: "read", Path: path, Err: err}
 	}
 	if int64(n) != size { // the size changed under us (cu.c:629)
+		clear(buf)
 		return nil, fmt.Errorf("sdcreds: failed to read %s: size changed", path)
 	}
 	return buf[:n], nil

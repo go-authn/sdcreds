@@ -308,6 +308,7 @@ func decryptCmd() *cobra.Command {
 		Short: "decrypt a credential",
 		Args:  cobra.MaximumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			hardenProcess()
 			if err := k.refuseTPM(cmd); err != nil {
 				return err
 			}
@@ -428,6 +429,7 @@ func s6RunCmd() *cobra.Command {
 		Short: "mount the decrypted credentials of a service and exec it",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			hardenProcess()
 			var hk sdcreds.HostKeySource
 			if f, err := hostKey(); err != nil {
 				hk = failingKey{err}
