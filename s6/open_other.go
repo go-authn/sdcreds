@@ -7,6 +7,9 @@ import (
 	"os"
 )
 
+// fchmodDir sets the mode of a directory (off unix there is no umask to defeat).
+var fchmodDir = func(path string, mode os.FileMode) error { return os.Chmod(path, mode) }
+
 // openSource opens a credential file for reading; replaced by the tests. Off
 // unix there is no O_NOFOLLOW, so a link is refused by a check first.
 var openSource = func(path string) (*os.File, error) {

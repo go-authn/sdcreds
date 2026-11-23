@@ -399,8 +399,32 @@ func setupCmd() *cobra.Command {
 
 type s6Flags struct {
 	service, user, baseDir, source string
+	secret, machineIDFile          string
 	unshare                        bool
 	allowNull                      bool
+}
+
+// s6HostKey is the host key of the privileged s6-run path: the default files
+// unless a flag names others, and a file named by a flag must be a regular file
+// owned by root (trustedUID) that group and others cannot write. The
+// environment plays no part.
+func s6HostKey(secret, machineID string) (sdcreds.HostKeyFile, error) {
+	if secret == "" {
+		secret = sdcreds.DefaultHostSecretPath
+	} else if err := checkTrusted(secret); err != nil {
+		return sdcreds.HostKeyFile{}, fmt.Errorf("--secret: %w", err)
+	}
+	var mid [16]byte
+	var err error
+	if machineID == "" {
+		mid, err = sdcreds.ReadMachineID(sdcreds.MachineIDPath)
+	} else {
+		mid, err = readTrustedMachineID(machineID)
+	}
+	if err != nil {
+		return sdcreds.HostKeyFile{}, err
+	}
+	return sdcreds.HostKeyFile{Path: secret, MachineID: mid}, nil
 }
 
 func (f *s6Flags) register(cmd *cobra.Command, run bool) {
@@ -411,6 +435,8 @@ func (f *s6Flags) register(cmd *cobra.Command, run bool) {
 	if run {
 		fl.StringVar(&f.user, "user", "", "user that owns the credentials and runs the command")
 		fl.StringVar(&f.source, "source", "", "directory of encrypted credentials, one file each")
+		fl.StringVar(&f.secret, "secret", "", "host secret file to use instead of "+sdcreds.DefaultHostSecretPath+" (absolute, owned by root, not writable by group or others)")
+		fl.StringVar(&f.machineIDFile, "machine-id-file", "", "machine id file to use instead of "+sdcreds.MachineIDPath+" (absolute, owned by root, not writable by group or others)")
 		fl.BoolVar(&f.allowNull, "allow-null", false, "accept credentials sealed with the null key (no secrecy)")
 		fl.BoolVar(&f.unshare, "unshare", true, "give this process a private mount namespace (the mount then dies with the service)")
 		_ = cmd.MarkFlagRequired("user")
@@ -429,11 +455,15 @@ func s6RunCmd() *cobra.Command {
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			hardenProcess()
+			// The key is never chosen by the environment: this runs with
+			// privileges, in front of a service. SYSTEMD_CREDENTIAL_SECRET and
+			// SDCREDS_MACHINE_ID_FILE are ignored; --secret and --machine-id-file
+			// are the only overrides and name root-owned files.
 			var hk sdcreds.HostKeySource
-			if f, err := hostKey(); err != nil {
+			if k, err := s6HostKey(f.secret, f.machineIDFile); err != nil {
 				hk = failingKey{err}
 			} else {
-				hk = f
+				hk = k
 			}
 			c := s6.Config{
 				Service: f.service, User: f.user, BaseDir: f.baseDir, Source: f.source,

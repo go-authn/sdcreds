@@ -66,7 +66,24 @@ type Ops struct {
 	// FSType names the file system at dir ("tmpfs", "ramfs", or anything else);
 	// optional. Only a tmpfs or ramfs is ever unmounted.
 	FSType func(dir string) (string, error)
+	// CanExec reports whether the service user u may execute path (the result of
+	// Resolve), judged by the kernel as that user. Optional. Run calls it before
+	// anything is mounted: once the privileges are dropped a failed exec can no
+	// longer take the credentials away.
+	CanExec func(path string, u User) error
+	// MountSource names the source (file-system name) of the mount on dir, and
+	// whether dir is a mount point at all; optional. Run and Finish detach only
+	// a mount whose source is MountTag, which is what this package mounts.
+	MountSource func(dir string) (src string, mounted bool, err error)
 }
+
+// MountTag is the file-system name of every mount this package makes. It is
+// the marker by which unmountAll recognises its own mounts.
+const MountTag = "sdcreds"
+
+// ErrForeignMount is returned when a memory file system at a credential
+// directory was not made by this package.
+var ErrForeignMount = errors.New("s6: refusing to unmount a mount that sdcreds did not create")
 
 // requireDir refuses anything but a real directory at dir (a symlink is not
 // followed).
@@ -232,9 +249,19 @@ func Run(c Config, ops Ops) (err error) {
 	}
 	// A command that cannot be found is learned before anything is mounted: after
 	// the privileges are dropped nothing could take the credentials away again.
+	path := c.Command[0]
 	if ops.Resolve != nil {
-		if _, err := ops.Resolve(c.Command[0]); err != nil {
+		p, err := ops.Resolve(c.Command[0])
+		if err != nil {
 			return fmt.Errorf("s6: command %q: %w", c.Command[0], err)
+		}
+		path = p
+	}
+	// Root can run what the service user cannot: that is learned now, not by a
+	// failed exec after the privileges are gone.
+	if ops.CanExec != nil {
+		if err := ops.CanExec(path, u); err != nil {
+			return fmt.Errorf("s6: command %q cannot be executed by %s: %w", c.Command[0], c.User, err)
 		}
 	}
 	creds, err := load(c)
@@ -255,7 +282,11 @@ func Run(c Config, ops Ops) (err error) {
 	// The base directory is shared by every service and must stay traversable;
 	// only the directory of this service is private.
 	// A failure is judged by checkBase, which needs the directory to exist.
-	_ = os.MkdirAll(c.BaseDir, 0o755)
+	// Whatever is created here gets its mode set explicitly: the umask of the
+	// caller must not make the base unreadable to the service user.
+	if err := makeBase(c.BaseDir); err != nil {
+		return err
+	}
 	// Whoever can write to the base directory can swap what is mounted or
 	// unmounted under it.
 	if err := checkBase(c.BaseDir); err != nil {
@@ -369,6 +400,30 @@ func Run(c Config, ops Ops) (err error) {
 	return fmt.Errorf("s6: exec %s: %w", c.Command[0], ops.Exec(c.Command, env))
 }
 
+// makeBase creates base and any missing parent, and sets 0755 on each
+// directory it created (by fchmod on the opened descriptor, so the umask and a
+// swapped name do not matter). A directory that already exists is left as it
+// is: checkBase judges it. A creation failure is not reported here either.
+func makeBase(base string) error {
+	var made []string
+	for p := base; ; p = filepath.Dir(p) {
+		if _, err := os.Lstat(p); err == nil {
+			break
+		}
+		made = append(made, p)
+	}
+	_ = os.MkdirAll(base, 0o755)
+	for _, p := range slices.Backward(made) {
+		if _, err := os.Lstat(p); err != nil {
+			continue
+		}
+		if err := fchmodDir(p, 0o755); err != nil {
+			return fmt.Errorf("s6: %w", err)
+		}
+	}
+	return nil
+}
+
 // maxLayers bounds the mounts stacked on one directory that unmountAll peels.
 const maxLayers = 64
 
@@ -388,6 +443,20 @@ func unmountAll(ops Ops, dir string) error {
 			}
 			if typ != "tmpfs" && typ != "ramfs" {
 				return nil
+			}
+		}
+		// Only what this package mounted is detached: a tmpfs that something
+		// else mounted (or /run itself) is refused.
+		if ops.MountSource != nil {
+			src, mounted, err := ops.MountSource(dir)
+			if err != nil {
+				return err
+			}
+			if !mounted {
+				return nil
+			}
+			if src != MountTag {
+				return fmt.Errorf("%w: %s", ErrForeignMount, dir)
 			}
 		}
 		err := ops.Unmount(dir)

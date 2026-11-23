@@ -8,8 +8,11 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"syscall"
+	"unsafe"
 )
 
 // msNoSymFollow is MS_NOSYMFOLLOW (linux/mount.h), absent from package syscall.
@@ -31,6 +34,8 @@ func Real() Ops {
 		Resolve:        exec.LookPath,
 		Move:           move,
 		FSType:         fsType,
+		CanExec:        canExec,
+		MountSource:    mountSource,
 	}
 }
 
@@ -84,14 +89,116 @@ func mountRAM(dir string) error {
 	}
 	defer release()
 	data := fmt.Sprintf("noswap,mode=0700,size=%d,nr_inodes=%d", MaxTotal+(1<<20), MaxEntries+16)
-	err = syscall.Mount("tmpfs", target, "tmpfs", hardening, data)
+	// The file-system name is the marker of the mounts of this package.
+	err = syscall.Mount(MountTag, target, "tmpfs", hardening, data)
 	if err == nil {
 		return nil
 	}
 	if !errors.Is(err, syscall.EINVAL) {
 		return err
 	}
-	return syscall.Mount("ramfs", target, "ramfs", hardening, "mode=0700")
+	return syscall.Mount(MountTag, target, "ramfs", hardening, "mode=0700")
+}
+
+// mountSource reads the mount table of this process for dir.
+func mountSource(dir string) (string, bool, error) {
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", false, err
+	}
+	table, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return "", false, err
+	}
+	src, mounted := mountSourceIn(string(table), real)
+	return src, mounted, nil
+}
+
+// Real-id calls of one thread (not the whole process, as package syscall's
+// Setresuid is): the thread that checks execution runs as the user for the
+// length of the check and is restored.
+func setThreadIDs(u User) (restore func() error, err error) {
+	prev, err := syscall.Getgroups()
+	if err != nil {
+		return func() error { return nil }, err
+	}
+	restore = func() error {
+		var errs []error
+		for _, call := range []func() error{
+			func() error { return rawSetres(syscall.SYS_SETRESUID, 0) },
+			func() error { return rawSetres(syscall.SYS_SETRESGID, 0) },
+			func() error { return rawSetgroups(prev) },
+		} {
+			errs = append(errs, call())
+		}
+		return errors.Join(errs...)
+	}
+	groups := u.Groups
+	if len(groups) == 0 {
+		groups = []int{u.GID}
+	}
+	if err := rawSetgroups(groups); err != nil {
+		return restore, err
+	}
+	if err := rawSetres(syscall.SYS_SETRESGID, u.GID); err != nil {
+		return restore, err
+	}
+	return restore, rawSetres(syscall.SYS_SETRESUID, u.UID)
+}
+
+// rawSetres sets the real and effective id of the calling thread to id and
+// keeps the saved id at 0, so that the thread can go back to root.
+func rawSetres(trap uintptr, id int) error {
+	if _, _, e := syscall.RawSyscall(trap, uintptr(id), uintptr(id), 0); e != 0 {
+		return e
+	}
+	return nil
+}
+
+func rawSetgroups(g []int) error {
+	ids := make([]uint32, len(g))
+	for i, v := range g {
+		ids[i] = uint32(v)
+	}
+	var p unsafe.Pointer
+	if len(ids) > 0 {
+		p = unsafe.Pointer(&ids[0])
+	}
+	if _, _, e := syscall.RawSyscall(syscall.SYS_SETGROUPS, uintptr(len(ids)), uintptr(p), 0); e != 0 {
+		return e
+	}
+	return nil
+}
+
+// canExec asks the kernel whether u may execute path: a regular file, every
+// directory of the path searchable and the file executable by u. The calling
+// thread takes u's identity for the check and gets root back; if it cannot, it
+// stays locked to the goroutine, which makes the runtime discard it.
+func canExec(path string, u User) error {
+	runtime.LockOSThread()
+	restore, err := setThreadIDs(u)
+	var aerr error
+	if err == nil {
+		aerr = syscall.Access(path, 1) // X_OK, by the real id, which is u's now
+	}
+	if rerr := restore(); rerr != nil {
+		return fmt.Errorf("could not restore the privileges of the thread: %w", rerr)
+	}
+	runtime.UnlockOSThread()
+	if err != nil {
+		return err
+	}
+	if aerr != nil {
+		return aerr
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !st.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", path)
+	}
+	return nil
 }
 
 func remountRO(dir string) error {

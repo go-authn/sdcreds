@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -26,7 +27,8 @@ func TestS6AsRoot(t *testing.T) {
 	if out, err := exec.Command("go", "build", "-buildvcs=false", "-o", bin, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v: %s", err, out)
 	}
-	env := append(os.Environ(), "SYSTEMD_CREDENTIAL_SECRET="+filepath.Join(dir, "credential.secret"))
+	secret := filepath.Join(dir, "credential.secret")
+	env := append(os.Environ(), "SYSTEMD_CREDENTIAL_SECRET="+secret)
 	sdcreds := func(stdin string, args ...string) (string, error) {
 		cmd := exec.Command(bin, args...)
 		cmd.Env = env
@@ -51,7 +53,9 @@ func TestS6AsRoot(t *testing.T) {
 	script := `d="$CREDENTIALS_DIRECTORY"; echo "pw=$(cat "$d/db")"; echo "uid=$(id -u)"; ` +
 		`echo "mount=$(grep " $d " /proc/self/mounts)"; (echo x > "$d/new") 2>/dev/null && echo writable || echo readonly`
 	for _, unshare := range []bool{true, false} {
-		args := []string{"s6-run", "--service=web", "--user=sdcreds-test", "--base-dir=" + base, "--source=" + src}
+		// s6-run takes the key from the files its flags name (root-owned), not
+		// from the environment, which also names this secret here.
+		args := []string{"s6-run", "--service=web", "--user=sdcreds-test", "--base-dir=" + base, "--source=" + src, "--secret=" + secret}
 		if !unshare {
 			args = append(args, "--unshare=false")
 		}
@@ -59,7 +63,7 @@ func TestS6AsRoot(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unshare=%v: %v: %s", unshare, err, out)
 		}
-		for _, want := range []string{"pw=hunter2", "uid=1000", "readonly", " tmpfs ", "nosuid", "nodev", "noexec"} {
+		for _, want := range []string{"pw=hunter2", "uid=1000", "readonly", " tmpfs ", "mount=sdcreds ", "nosuid", "nodev", "noexec"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("unshare=%v: %q missing from:\n%s", unshare, want, out)
 			}
@@ -99,12 +103,49 @@ func TestS6AsRoot(t *testing.T) {
 	}
 	// A command that does not exist fails before anything is mounted, even
 	// without a private namespace.
-	args := []string{"s6-run", "--service=web", "--user=sdcreds-test", "--base-dir=" + base, "--source=" + src, "--unshare=false", "--", "/nonexistent/cmd"}
+	args := []string{"s6-run", "--service=web", "--user=sdcreds-test", "--base-dir=" + base, "--source=" + src, "--secret=" + secret, "--unshare=false", "--", "/nonexistent/cmd"}
 	if out, err := sdcreds("", args...); err == nil {
 		t.Errorf("a missing command was run: %s", out)
 	}
 	mounts, _ := os.ReadFile("/proc/self/mounts")
 	if strings.Contains(string(mounts), filepath.Join(base, "web")) {
 		t.Error("credentials left mounted after a failed exec")
+	}
+
+	// A command that root may run and the service user may not (it sits in a
+	// directory only root can enter) is refused before anything is mounted.
+	svc := filepath.Join(dir, "service.sh")
+	os.WriteFile(svc, []byte("#!/bin/sh\nexit 0\n"), 0o700)
+	args = []string{"s6-run", "--service=web", "--user=sdcreds-test", "--base-dir=" + base, "--source=" + src, "--secret=" + secret, "--unshare=false", "--", svc}
+	out, err := sdcreds("", args...)
+	if err == nil {
+		t.Errorf("a command the service user cannot execute was run: %s", out)
+	}
+	mounts, _ = os.ReadFile("/proc/self/mounts")
+	if strings.Contains(string(mounts), filepath.Join(base, "web")) {
+		t.Errorf("credentials left mounted after a command the service user cannot execute: %s", out)
+	}
+
+	// The environment does not choose the key of s6-run.
+	args = []string{"s6-run", "--service=web", "--user=sdcreds-test", "--base-dir=" + base, "--source=" + src, "--", "/bin/true"}
+	if out, err := sdcreds("", args...); err == nil {
+		t.Errorf("s6-run used the key that the environment names: %s", out)
+	}
+
+	// s6-finish detaches what sdcreds mounted and nothing else.
+	foreign := filepath.Join(base, "foreign")
+	if err := os.MkdirAll(foreign, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mount("foreign", foreign, "tmpfs", 0, ""); err != nil {
+		t.Fatal(err)
+	}
+	defer syscall.Unmount(foreign, syscall.MNT_DETACH)
+	if out, err := sdcreds("", "s6-finish", "--service=foreign", "--base-dir="+base); err == nil {
+		t.Errorf("s6-finish detached a mount that sdcreds did not make: %s", out)
+	}
+	mounts, _ = os.ReadFile("/proc/self/mounts")
+	if !strings.Contains(string(mounts), foreign+" ") {
+		t.Error("the foreign mount is gone")
 	}
 }

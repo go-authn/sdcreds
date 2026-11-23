@@ -68,7 +68,10 @@ CI sets it, so an absent binary is a failure there.
   refuses it on every machine unless `--allow-null` is given (systemd instead
   consults the TPM2 and SecureBoot state; that library policy,
   `SystemNullPolicy`, is not used by the CLI).
-* `SDCREDS_MACHINE_ID_FILE` (command line only) points at another machine id file.
+* `SDCREDS_MACHINE_ID_FILE` (`encrypt`, `decrypt`, `setup`) points at another machine
+  id file. `s6-run` ignores it and `SYSTEMD_CREDENTIAL_SECRET`: its key comes from
+  the default files, or from `--secret` and `--machine-id-file`, which must name
+  regular files owned by root that group and others cannot write.
 * A variable IV size is accepted when reading, as in systemd; this library
   always writes 12 bytes.
 * The secret is opened without following a final symlink, and must be a regular
@@ -84,7 +87,10 @@ plaintext 0400 owned by the service user, remounts it read-only, sets
 `CREDENTIALS_DIRECTORY`, drops privileges and execs. Any failure undoes the
 mount. The mount lives in a private namespace by default (`--unshare=false` turns
 that off), so it disappears with the service. The command is looked up before
-anything is mounted. A credential sealed with the null key is refused unless
+anything is mounted, and so is whether the service user may execute it. The
+base directory, when `s6-run` creates it, is made 0755 whatever the umask.
+Every mount is named `sdcreds`, and `s6-finish` (like `s6-run` before it mounts)
+detaches only a mount of that name. A credential sealed with the null key is refused unless
 `--allow-null` is given, and one that carries no name is always refused. `sdcreds s6-finish --service=web` unmounts lazily and removes the
 directory; it is idempotent. At most 1024 credentials and 16 MiB per service.
 Linux only; elsewhere the commands report `ErrUnsupported`.
