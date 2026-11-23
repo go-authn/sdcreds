@@ -276,6 +276,9 @@ func Run(c Config, ops Ops) (err error) {
 		return err
 	}
 	defer wipe(creds)
+	// Registered before the clean-up below, so it runs after it.
+	releaseSignals := func() {}
+	defer func() { releaseSignals() }()
 
 	// The mount namespace belongs to this thread; Start gives it to the thread
 	// that starts the service.
@@ -373,6 +376,9 @@ func Run(c Config, ops Ops) (err error) {
 			return err
 		}
 	}
+	// The plaintext is in the file system now and nowhere else is it needed: it
+	// does not stay in this process for as long as the service runs.
+	wipe(creds)
 	if err := ops.Chown(stage, u.UID, u.GID); err != nil {
 		return err
 	}
@@ -407,6 +413,10 @@ func Run(c Config, ops Ops) (err error) {
 	// child that drops them. A failure to exec is reported by Start, so the
 	// credentials are taken away below before Run fails.
 	wait, err := ops.Start(u, c.Command, env)
+	// From here until the credentials are gone a signal is not allowed to end
+	// this process (Start forwarded it to the service while it ran): a second
+	// TERM during the clean-up must not leave the mount behind.
+	releaseSignals = holdSignals()
 	if err != nil {
 		return fmt.Errorf("s6: start %s: %w", c.Command[0], err)
 	}

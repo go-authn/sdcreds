@@ -7,7 +7,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/go-authn/sdcreds"
 )
@@ -30,10 +33,23 @@ func openTrusted(path string) (*os.File, error) {
 	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
 		return nil, fmt.Errorf("%w: %q must be an absolute, normalised path", sdcreds.ErrInvalid, path)
 	}
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
+	// A link above the file is resolved, and the directories it leads to are
+	// judged like any other: a link that someone else made can only lead where
+	// the rules above hold. The walk itself follows nothing.
+	dir, err := filepath.EvalSymlinks(filepath.Dir(path))
 	if err != nil {
 		return nil, err
 	}
+	dirfd, err := walkTrustedDirs(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer unix.Close(dirfd)
+	fd, err := unix.Openat(dirfd, filepath.Base(path), unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	f := os.NewFile(uintptr(fd), path)
 	st, err := statTrusted(f)
 	if err == nil {
 		err = judgeTrusted(path, st)
@@ -43,6 +59,57 @@ func openTrusted(path string) (*os.File, error) {
 		return nil, err
 	}
 	return f, nil
+}
+
+// ancestorsFrom is the directory from which the ancestors of a key file are
+// judged, "/" in production; a variable for the tests, which do not run as root.
+var ancestorsFrom = "/"
+
+// walkTrustedDirs opens the directory that holds path one component at a time,
+// from "/", without following a symbolic link, and judges every directory it
+// crosses: the owner is trustedUID and neither group nor others can write. A
+// directory that anyone else can write to would let them swap the file, and a
+// link in the path lets whoever owns the link point it elsewhere. It returns a
+// descriptor of dir.
+func walkTrustedDirs(dir string) (int, error) {
+	const flags = unix.O_RDONLY | unix.O_DIRECTORY | unix.O_NOFOLLOW | unix.O_CLOEXEC
+	fd, err := unix.Open("/", flags, 0)
+	if err != nil {
+		return -1, err
+	}
+	cur := "/"
+	for _, comp := range append([]string{""}, strings.Split(strings.Trim(dir, "/"), "/")...) {
+		if comp != "" {
+			next, err := unix.Openat(fd, comp, flags, 0)
+			unix.Close(fd)
+			if err != nil {
+				return -1, &os.PathError{Op: "open", Path: filepath.Join(cur, comp), Err: err}
+			}
+			fd, cur = next, filepath.Join(cur, comp)
+		}
+		if cur == ancestorsFrom || strings.HasPrefix(cur, strings.TrimSuffix(ancestorsFrom, "/")+"/") {
+			var st unix.Stat_t
+			if err := unix.Fstat(fd, &st); err != nil {
+				unix.Close(fd)
+				return -1, err
+			}
+			if err := judgeDir(cur, &st); err != nil {
+				unix.Close(fd)
+				return -1, err
+			}
+		}
+	}
+	return fd, nil
+}
+
+func judgeDir(path string, st *unix.Stat_t) error {
+	switch {
+	case st.Uid != trustedUID:
+		return fmt.Errorf("directory %s of the path is not owned by uid %d", path, trustedUID)
+	case st.Mode&0o022 != 0:
+		return fmt.Errorf("directory %s of the path is writable by group or others (%v)", path, os.FileMode(st.Mode&0o777))
+	}
+	return nil
 }
 
 func judgeTrusted(path string, st os.FileInfo) error {

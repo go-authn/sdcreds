@@ -9,17 +9,12 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"strconv"
+	"strings"
 	"syscall"
 
 	"golang.org/x/sys/unix"
 )
-
-// forwarded are the signals that s6 (and a terminal) send to a service; the
-// process that s6 supervises is this one, and the service must see them.
-var forwarded = []os.Signal{
-	syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP, syscall.SIGQUIT,
-	syscall.SIGUSR1, syscall.SIGUSR2, syscall.SIGALRM, syscall.SIGCONT,
-}
 
 // maxInheritedFD bounds the descriptors handed to the service.
 const maxInheritedFD = 256
@@ -28,6 +23,17 @@ type outcome struct {
 	code int
 	err  error
 }
+
+// Seams for the tests: none of these calls can be made to fail on a real system.
+var (
+	openRoot = func() (*os.File, error) {
+		return os.OpenFile("/", os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
+	}
+	openNS     = func() (*os.File, error) { return os.Open("/proc/thread-self/ns/mnt") }
+	restrict   = restrictThread
+	chroot     = syscall.Chroot
+	judgeChild = judgeIDs
+)
 
 // start forks the service from a thread of its own that has dropped the
 // privileges and joined the mount namespace of the caller. The caller keeps
@@ -42,11 +48,18 @@ func start(u User, argv, env []string) (func() (int, error), error) {
 		return nil, err
 	}
 	// The mount namespace is the one of the calling thread (Run unshared it).
-	ns, err := os.Open("/proc/thread-self/ns/mnt")
+	ns, err := openNS()
 	if err != nil {
 		return nil, err
 	}
 	defer ns.Close()
+	// The root of this thread, which setns resets in the launcher: opened here,
+	// in the namespace the launcher will join.
+	root, err := openRoot()
+	if err != nil {
+		return nil, fmt.Errorf("cannot save the root directory: %w", err)
+	}
+	defer root.Close()
 	wd, _ := os.Getwd()
 
 	sigs := make(chan os.Signal, 16)
@@ -58,7 +71,7 @@ func start(u User, argv, env []string) (func() (int, error), error) {
 		// also outlive the child (the parent-death signal is tied to it).
 		runtime.LockOSThread()
 		defer func() { signal.Stop(sigs); close(sigs) }()
-		cmd, err := launch(ns, wd, u, path, argv, env)
+		cmd, err := launch(ns, root, wd, u, path, argv, env)
 		ready <- err
 		if err != nil {
 			return
@@ -76,34 +89,108 @@ func start(u User, argv, env []string) (func() (int, error), error) {
 	return func() (int, error) { o := <-done; return o.code, o.err }, nil
 }
 
-// launch runs on the locked thread.
-func launch(ns *os.File, wd string, u User, path string, argv, env []string) (*exec.Cmd, error) {
+// launch runs on the locked thread. Only the child ever takes the identity of
+// the service: this thread, and the process it belongs to, stay root, so the
+// service has no thread of its parent that carries its own ids.
+func launch(ns, root *os.File, wd string, u User, path string, argv, env []string) (*exec.Cmd, error) {
 	// Threads share the file-system attributes of the process; setns needs a
-	// copy of its own, and then resets the working directory.
-	if err := syscall.Unshare(syscall.CLONE_FS); err != nil {
-		return nil, fmt.Errorf("unshare: %w", err)
+	// copy of its own, and then resets the root and the working directory.
+	// A failure is reported by setns, which refuses a thread that shares them.
+	_ = syscall.Unshare(syscall.CLONE_FS)
+	if err := enterNamespace(ns, root, wd); err != nil {
+		return nil, err
 	}
-	if err := unix.Setns(int(ns.Fd()), unix.CLONE_NEWNS); err != nil {
-		return nil, fmt.Errorf("setns: %w", err)
+	if err := restrict(); err != nil {
+		return nil, fmt.Errorf("restrict: %w", err)
 	}
-	if wd != "" {
-		if err := syscall.Chdir(wd); err != nil {
-			return nil, err
-		}
+	groups := make([]uint32, 0, len(u.Groups)+1)
+	for _, g := range u.Groups {
+		groups = append(groups, uint32(g))
 	}
-	if err := dropPrivileges(u); err != nil {
-		return nil, fmt.Errorf("drop privileges: %w", err)
+	if len(groups) == 0 {
+		groups = append(groups, uint32(u.GID))
 	}
 	cmd := &exec.Cmd{
 		Path: path, Args: argv, Env: env,
 		Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
-		ExtraFiles:  inheritedFiles(),
-		SysProcAttr: &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL},
+		ExtraFiles: inheritedFiles(),
+		SysProcAttr: &syscall.SysProcAttr{
+			Pdeathsig: syscall.SIGKILL,
+			// Set in the child, between fork and exec.
+			Credential: &syscall.Credential{Uid: uint32(u.UID), Gid: uint32(u.GID), Groups: groups},
+		},
 	}
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
+	// Whatever the kernel said, the child must have nothing of root left.
+	status, err := os.ReadFile("/proc/" + strconv.Itoa(cmd.Process.Pid) + "/status")
+	if err == nil {
+		err = judgeChild(string(status), u)
+	}
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return nil, fmt.Errorf("the service did not take the identity of %d:%d: %w", u.UID, u.GID, err)
+	}
 	return cmd, nil
+}
+
+// judgeIDs reads the real, effective, saved and file-system ids of a
+// /proc/<pid>/status and refuses any that is not the user's.
+func judgeIDs(status string, u User) error {
+	seen := map[string]bool{}
+	for _, line := range strings.Split(status, "\n") {
+		key, rest, ok := strings.Cut(line, ":")
+		want := u.UID
+		switch key {
+		case "Uid":
+		case "Gid":
+			want = u.GID
+		default:
+			continue
+		}
+		if !ok {
+			continue
+		}
+		f := strings.Fields(rest)
+		if len(f) != 4 {
+			return fmt.Errorf("%s line has %d fields", key, len(f))
+		}
+		for _, v := range f {
+			if n, err := strconv.Atoi(v); err != nil || n != want {
+				return fmt.Errorf("%s is %s, not %d", key, strings.Join(f, " "), want)
+			}
+		}
+		seen[key] = true
+	}
+	if !seen["Uid"] || !seen["Gid"] {
+		return errors.New("no Uid or Gid line")
+	}
+	return nil
+}
+
+// enterNamespace moves this thread into the mount namespace of ns and puts back
+// what setns resets: the root directory (a service started from a chroot runs
+// in that chroot, not in the tree of the host) and the working directory. The
+// thread must have its own file-system attributes. A root that cannot be put
+// back is an error: nothing is started from a tree it was not meant for.
+func enterNamespace(ns, root *os.File, wd string) error {
+	if err := unix.Setns(int(ns.Fd()), unix.CLONE_NEWNS); err != nil {
+		return fmt.Errorf("setns: %w", err)
+	}
+	if err := syscall.Fchdir(int(root.Fd())); err != nil {
+		return fmt.Errorf("could not restore the root directory: %w", err)
+	}
+	if err := chroot("."); err != nil {
+		return fmt.Errorf("could not restore the root directory: %w", err)
+	}
+	if wd != "" {
+		if err := syscall.Chdir(wd); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // inheritedFiles are the descriptors above 2 that this process was given to
@@ -124,10 +211,8 @@ func inheritedFiles() []*os.File {
 	return files[:last]
 }
 
+// exitOutcome turns the result of Wait into an outcome; no error is status 0.
 func exitOutcome(err error) outcome {
-	if err == nil {
-		return outcome{}
-	}
 	var ee *exec.ExitError
 	if errors.As(err, &ee) {
 		if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {

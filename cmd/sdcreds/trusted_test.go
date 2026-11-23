@@ -41,9 +41,64 @@ func withOps(t *testing.T) *[]string {
 
 func asOwner(t *testing.T, uid uint32) {
 	t.Helper()
-	old := trustedUID
-	t.Cleanup(func() { trustedUID = old })
+	old, oldTop := trustedUID, ancestorsFrom
+	t.Cleanup(func() { trustedUID, ancestorsFrom = old, oldTop })
 	trustedUID = uid
+	// The directories above the test's own are not the test's to judge.
+	top, err := filepath.EvalSymlinks(filepath.Dir(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ancestorsFrom = top
+}
+
+// The directories above a key file are held to the same rules as the file: a
+// directory that group or others can write, or that another user owns, and a
+// symbolic link in the path, are refused.
+func TestOpenTrustedJudgesTheAncestors(t *testing.T) {
+	asOwner(t, uint32(os.Getuid()))
+	top := ancestorsFrom
+	good := filepath.Join(top, "good", "deeper")
+	if err := os.MkdirAll(good, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(good, "key")
+	os.WriteFile(file, []byte("k"), 0o400)
+	if err := checkTrusted(file); err != nil {
+		t.Fatalf("control: %v", err)
+	}
+	for _, mode := range []os.FileMode{0o775, 0o757} {
+		os.Chmod(filepath.Join(top, "good"), mode)
+		if err := checkTrusted(file); err == nil || !strings.Contains(err.Error(), "writable by group or others") {
+			t.Errorf("ancestor %v: %v", mode, err)
+		}
+	}
+	os.Chmod(filepath.Join(top, "good"), 0o755)
+	// the directory of the file itself
+	os.Chmod(good, 0o777)
+	if err := checkTrusted(file); err == nil {
+		t.Error("a writable parent directory was accepted")
+	}
+	os.Chmod(good, 0o755)
+	// another owner (the top is judged too)
+	trustedUID = uint32(os.Getuid()) + 1
+	if err := checkTrusted(file); err == nil || !strings.Contains(err.Error(), "not owned") {
+		t.Errorf("foreign owner of an ancestor: %v", err)
+	}
+	trustedUID = uint32(os.Getuid())
+	// a link above the file leads to a directory that is judged: fine when it
+	// holds the rules, refused when it does not
+	link := filepath.Join(top, "link")
+	if err := os.Symlink(filepath.Join(top, "good"), link); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkTrusted(filepath.Join(link, "deeper", "key")); err != nil {
+		t.Errorf("a link to a trusted directory: %v", err)
+	}
+	os.Chmod(filepath.Join(top, "good"), 0o777)
+	if err := checkTrusted(filepath.Join(link, "deeper", "key")); err == nil {
+		t.Error("a link to a writable directory was accepted")
+	}
 }
 
 // The privileged path takes its key from the default files or from files named

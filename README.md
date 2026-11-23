@@ -103,6 +103,22 @@ detaches only a mount of that name. A credential sealed with the null key is ref
 directory; it is idempotent. At most 1024 credentials and 16 MiB per service.
 Linux only; elsewhere the commands report `ErrUnsupported`.
 
+### Security notes
+
+* The key files named by `--secret` and `--machine-id-file` must be root-owned
+  and not writable by group or others, and so must every directory above them up
+  to `/` (a symbolic link in the path is resolved, and the directories it leads
+  to are judged the same way).
+* Only the child takes the identity of the service; `s6-run` and all its threads
+  stay root. `s6-run` started inside a chroot starts the service in that chroot.
+* A second `TERM` (or any forwarded signal) while `s6-run` takes the credentials
+  away does not end it before the unmount. The plaintext is wiped from the memory
+  of `s6-run` as soon as it is in the file system, before the service starts.
+* With `--unshare=false` the mount lives in the namespace of the host: a `SIGKILL`
+  of `s6-run` (which cannot be caught) leaves the mount in place, and it stays
+  until `sdcreds s6-finish` runs (put it in the finish script of the service). The
+  default, a private namespace, has no such leftover.
+
 ## Safety
 
 Every length is checked before it is used, before anything is allocated, and

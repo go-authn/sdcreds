@@ -4,6 +4,8 @@ package main
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"os"
 	"os/exec"
@@ -39,7 +41,17 @@ func newITRig(t *testing.T) *itRig {
 	if out, err := exec.Command("go", "build", "-buildvcs=false", "-o", r.bin, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v: %s", err, out)
 	}
-	r.secret = filepath.Join(r.dir, "credential.secret")
+	// The key file sits in directories only root can write, all the way up: the
+	// temporary directory of the test is below /tmp, which anyone can write.
+	keydir, err := os.MkdirTemp("/run", "sdcreds-it-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(keydir) })
+	if err := os.Chmod(keydir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r.secret = filepath.Join(keydir, "credential.secret")
 	r.env = append(os.Environ(), "SYSTEMD_CREDENTIAL_SECRET="+r.secret)
 	if out, err := r.sdcreds("", "setup"); err != nil {
 		t.Fatalf("setup: %v: %s", err, out)
@@ -319,5 +331,32 @@ func TestS6AsRootSupervision(t *testing.T) {
 	}
 	if out, err := r.sdcreds("", "s6-finish", "--service=web", "--base-dir="+r.base); err != nil || r.mounted() {
 		t.Errorf("finish: %v: %s", err, out)
+	}
+}
+
+// A big source (97 credentials of 96 KiB) read many times in a row, with the
+// namespace of one thread unshared, always works: the mount table that is read
+// is the one of the thread that unshared, not the one of the group leader.
+func TestS6AsRootManyCredentialsManyRuns(t *testing.T) {
+	r := newITRig(t)
+	buf := make([]byte, 48<<10)
+	for i := 0; i < 96; i++ {
+		if _, err := rand.Read(buf); err != nil {
+			t.Fatal(err)
+		}
+		name := "c" + strconv.Itoa(i)
+		if out, err := r.sdcreds(hex.EncodeToString(buf), "encrypt", "--name="+name, "-", filepath.Join(r.src, name)); err != nil {
+			t.Fatalf("encrypt: %v: %s", err, out)
+		}
+	}
+	failures, last := 0, ""
+	for i := 0; i < 150; i++ {
+		if out, err := r.sdcreds("", r.runArgs(true, "/bin/true")...); err != nil {
+			failures++
+			last = out
+		}
+	}
+	if failures != 0 {
+		t.Errorf("%d of 150 runs failed; last: %s", failures, last)
 	}
 }

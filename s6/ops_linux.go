@@ -99,13 +99,17 @@ func mountRAM(dir string) error {
 	return syscall.Mount(MountTag, target, "ramfs", hardening, "mode=0700")
 }
 
-// mountSource reads the mount table of this process for dir.
+const threadMountinfo = "/proc/thread-self/mountinfo"
+
+// mountSource reads the mount table of the calling thread for dir. Not
+// /proc/self/mountinfo: that is the table of the thread-group leader, and Run
+// unshares the mount namespace of its own (locked) thread only.
 func mountSource(dir string) (string, bool, error) {
 	real, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		return "", false, err
 	}
-	table, err := os.ReadFile("/proc/self/mountinfo")
+	table, err := os.ReadFile(threadMountinfo)
 	if err != nil {
 		return "", false, err
 	}
@@ -286,12 +290,14 @@ func prctl(option, arg2 uintptr) (uintptr, error) {
 	return r, nil
 }
 
-// dropPrivileges runs on a locked thread that is never given back to the
-// runtime and that forks the service: no_new_privs, the bounding set and the
-// ids belong to the thread, and a forked child and its exec inherit them. The
-// service can neither gain privileges from a set-user-id file nor get back a
-// capability, and the drop is checked.
-func dropPrivileges(u User) error {
+// restrictThread runs on a locked thread that is never given back to the
+// runtime and that forks the service: no_new_privs and the bounding set belong
+// to the thread, and a forked child and its exec inherit them. The service can
+// neither gain privileges from a set-user-id file nor get back a capability.
+// The ids are not changed here: this thread and its process stay root, and the
+// child alone takes the identity of the service (SysProcAttr.Credential), so no
+// thread of the parent carries ids the service could act through.
+func restrictThread() error {
 	if _, err := prctl(prSetNoNewPrivs, 1); err != nil {
 		return fmt.Errorf("no_new_privs: %w", err)
 	}
@@ -305,26 +311,6 @@ func dropPrivileges(u User) error {
 		if _, err := prctl(prCapbsetDrop, c); err != nil {
 			return fmt.Errorf("capability bounding set: %w", err)
 		}
-	}
-	groups := u.Groups
-	if len(groups) == 0 {
-		groups = []int{u.GID}
-	}
-	// The ids of this thread alone, and all three of them: the process keeps
-	// root, and this thread (which never goes back) passes what it is to the
-	// child it forks.
-	if err := rawSetgroups(groups); err != nil {
-		return err
-	}
-	if err := rawSetres(trapSetresgid, u.GID, u.GID); err != nil {
-		return err
-	}
-	if err := rawSetres(trapSetresuid, u.UID, u.UID); err != nil {
-		return err
-	}
-	// Whatever the kernel said, root must not be recoverable.
-	if u.UID != 0 && rawSetres(trapSetresuid, 0, 0) == nil {
-		return errors.New("privileges were not dropped: setuid(0) succeeded")
 	}
 	return nil
 }
