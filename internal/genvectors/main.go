@@ -87,6 +87,12 @@ func run(dir, idPath string, command func(args ...string) *exec.Cmd) error {
 		return err
 	}
 	defer os.RemoveAll(tmp)
+	// systemd-creds refuses a secret it does not own privately (the checkout
+	// belongs to another user in a container): use a private copy.
+	c.secret = filepath.Join(tmp, "host.secret")
+	if err := os.WriteFile(c.secret, raw, 0o400); err != nil {
+		return err
+	}
 
 	m := vecspec.Manifest{Systemd: "262.2", MachineID: machineID, User: vecspec.User, UID: vecspec.UID, Timestamp: vecspec.Timestamp}
 	vectors := vecspec.Matrix()
