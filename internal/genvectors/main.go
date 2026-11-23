@@ -48,6 +48,9 @@ func (c creds) cmd(args ...string) *exec.Cmd {
 	return cmd
 }
 
+// writeSecret writes the private copy of the host secret; a variable for the tests.
+var writeSecret = os.WriteFile
+
 // run writes the vectors and the manifest into dir, with the machine id
 // written to idPath, using command to start systemd-creds.
 func run(dir, idPath string, command func(args ...string) *exec.Cmd) error {
@@ -90,7 +93,7 @@ func run(dir, idPath string, command func(args ...string) *exec.Cmd) error {
 	// systemd-creds refuses a secret it does not own privately (the checkout
 	// belongs to another user in a container): use a private copy.
 	c.secret = filepath.Join(tmp, "host.secret")
-	if err := os.WriteFile(c.secret, raw, 0o400); err != nil {
+	if err := writeSecret(c.secret, raw, 0o400); err != nil {
 		return err
 	}
 

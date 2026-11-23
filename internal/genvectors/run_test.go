@@ -286,8 +286,14 @@ func TestRunSetupErrors(t *testing.T) {
 	}
 	machineID = vecspec.MachineID
 	t.Setenv("TMPDIR", filepath.Join(root, "missing-tmp"))
-	if err := run(filepath.Join(root, "v4"), filepath.Join(root, "id4"), cmd); err == nil {
-		t.Error("missing temporary directory")
+	if err := run(filepath.Join(root, "v4"), filepath.Join(root, "id4"), cmd); err == nil || !strings.Contains(err.Error(), "missing-tmp") {
+		t.Errorf("missing temporary directory: %v", err)
+	}
+	t.Setenv("TMPDIR", root)
+	defer func(o func(string, []byte, os.FileMode) error) { writeSecret = o }(writeSecret)
+	writeSecret = func(string, []byte, os.FileMode) error { return errors.New("no private copy") }
+	if err := run(filepath.Join(root, "v5"), filepath.Join(root, "id5"), cmd); err == nil || !strings.Contains(err.Error(), "no private copy") {
+		t.Errorf("private copy of the secret: %v", err)
 	}
 }
 
