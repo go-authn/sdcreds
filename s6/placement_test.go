@@ -230,3 +230,54 @@ func TestCredentialSourceMustBeARegularFile(t *testing.T) {
 		t.Errorf("%q %v", b, err)
 	}
 }
+
+// Without a way to place the staged mount nothing is mounted and nothing runs.
+func TestMissingMoveIsRefused(t *testing.T) {
+	r, c := newRig(t), config(t)
+	ops := r.ops()
+	ops.Move = nil
+	err := Run(c, ops)
+	if err == nil || errors.Is(err, errExec) || slices.Contains(r.calls, "mount") || slices.Contains(r.calls, "exec") {
+		t.Fatalf("%v %v", err, r.calls)
+	}
+}
+
+// A mount left by an earlier run that cannot be removed stops the start.
+func TestStaleMountThatWillNotGoStopsTheStart(t *testing.T) {
+	r, c := newRig(t), config(t)
+	dir := Dir(c.BaseDir, c.Service)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	r.layers[dir] = 1
+	boom := errors.New("busy")
+	r.fail["unmount"] = boom
+	err := Run(c, r.ops())
+	if !errors.Is(err, boom) || slices.Contains(r.calls, "mount") || slices.Contains(r.calls, "exec") {
+		t.Fatalf("%v %v", err, r.calls)
+	}
+}
+
+// A base directory that cannot be created, or a service directory that cannot
+// be made, ends the start before anything is mounted.
+func TestUnusableBaseDirectoryStopsTheStart(t *testing.T) {
+	for name, mk := range map[string]func(c *Config){
+		"base under a file": func(c *Config) {
+			f := filepath.Join(t.TempDir(), "f")
+			os.WriteFile(f, nil, 0o600)
+			c.BaseDir = filepath.Join(f, "base")
+		},
+		"service dir is a file": func(c *Config) {
+			os.WriteFile(Dir(c.BaseDir, c.Service), nil, 0o600)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, c := newRig(t), config(t)
+			mk(&c)
+			err := Run(c, r.ops())
+			if err == nil || errors.Is(err, errExec) || slices.Contains(r.calls, "mount") {
+				t.Fatalf("%v %v", err, r.calls)
+			}
+		})
+	}
+}
