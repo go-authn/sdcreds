@@ -8,6 +8,10 @@ import (
 	"path/filepath"
 )
 
+// openTemp creates the temporary file; a variable so a test can make the write
+// fail.
+var openTemp = openExclusive
+
 // writeFileAtomic puts data at path with mode 0600 through a fresh file that is
 // created exclusively (never through an existing file or symlink) in the same
 // directory, synced, and renamed into place. A pre-existing file or symlink at
@@ -20,7 +24,7 @@ func writeFileAtomic(path string, data []byte) (err error) {
 		var r [8]byte
 		rand.Read(r[:]) // never fails since Go 1.24
 		name = filepath.Join(dir, ".sdcreds-"+hex.EncodeToString(r[:])+".tmp")
-		tmp, err = openExclusive(name)
+		tmp, err = openTemp(name)
 		if !errors.Is(err, os.ErrExist) {
 			break
 		}

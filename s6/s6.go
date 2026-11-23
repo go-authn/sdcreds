@@ -278,9 +278,8 @@ func Run(c Config, ops Ops) (err error) {
 	stage := filepath.Join(stageRoot, "mnt")
 	staged, placed := false, false
 	defer func() {
-		if err == nil {
-			return
-		}
+		// Run never returns nil from here on (a failed exec is an error
+		// too), so every exit cleans up.
 		var left error
 		if staged {
 			if uerr := unmountAll(ops, stage); uerr != nil {

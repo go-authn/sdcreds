@@ -53,3 +53,28 @@ func TestOutputIsWrittenThroughAFreshFile(t *testing.T) {
 		t.Errorf("%v", err)
 	}
 }
+
+// A failed write must neither replace the destination nor leave the temporary
+// file behind.
+func TestFailedWriteKeepsTheDestinationAndLeavesNothing(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "dest")
+	os.WriteFile(dest, []byte("old"), 0o600)
+	openTemp = func(name string) (*os.File, error) {
+		f, err := openExclusive(name)
+		if err == nil {
+			f.Close() // every later write and sync on it fails
+		}
+		return f, err
+	}
+	t.Cleanup(func() { openTemp = openExclusive })
+	if err := writeFileAtomic(dest, []byte("new")); err == nil {
+		t.Fatal("a failed write was reported as done")
+	}
+	if b, _ := os.ReadFile(dest); string(b) != "old" {
+		t.Errorf("destination replaced: %q", b)
+	}
+	if left, _ := filepath.Glob(filepath.Join(dir, ".sdcreds-*")); len(left) != 0 {
+		t.Errorf("left over: %v", left)
+	}
+}

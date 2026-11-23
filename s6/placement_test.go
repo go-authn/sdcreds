@@ -281,3 +281,73 @@ func TestUnusableBaseDirectoryStopsTheStart(t *testing.T) {
 		})
 	}
 }
+
+// A path that cannot be examined is an error, not an accepted directory.
+func TestMissingBaseAndServiceDirectoriesAreErrors(t *testing.T) {
+	gone := filepath.Join(t.TempDir(), "gone")
+	if err := requireDir(gone); err == nil {
+		t.Error("requireDir accepted a missing path")
+	}
+	if err := checkBase(gone); err == nil {
+		t.Error("checkBase accepted a missing path")
+	}
+}
+
+// Finish with no base directory has nothing to release and touches nothing.
+func TestFinishWithoutBaseDirectoryDoesNothing(t *testing.T) {
+	r := newRig(t)
+	if err := Finish("web", filepath.Join(t.TempDir(), "gone"), r.ops()); err != nil || len(r.calls) != 0 {
+		t.Fatalf("%v %v", err, r.calls)
+	}
+}
+
+// A directory that does not exist is not mounted: no unmount is attempted on
+// it, and an error from asking what is there is reported.
+func TestUnmountAllOnAMissingOrUnreadableDirectory(t *testing.T) {
+	r := newRig(t)
+	ops := r.ops()
+	ops.FSType = func(string) (string, error) { return "", os.ErrNotExist }
+	if err := unmountAll(ops, "/x"); err != nil || slices.Contains(r.calls, "unmount") {
+		t.Errorf("%v %v", err, r.calls)
+	}
+	boom := errors.New("io")
+	ops.FSType = func(string) (string, error) { return "", boom }
+	if err := unmountAll(ops, "/x"); !errors.Is(err, boom) || slices.Contains(r.calls, "unmount") {
+		t.Errorf("%v %v", err, r.calls)
+	}
+}
+
+// A staging directory that cannot be created, or that cannot be removed once
+// the mount has been moved away, ends the start before the privileges drop.
+func TestStagingDirectoryFailuresStopTheStart(t *testing.T) {
+	t.Run("not creatable", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root ignores directory modes")
+		}
+		r, c := newRig(t), config(t)
+		if err := os.MkdirAll(Dir(c.BaseDir, c.Service), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		os.Chmod(c.BaseDir, 0o555)
+		t.Cleanup(func() { os.Chmod(c.BaseDir, 0o755) })
+		err := Run(c, r.ops())
+		if err == nil || errors.Is(err, errExec) || slices.Contains(r.calls, "mount") {
+			t.Fatalf("%v %v", err, r.calls)
+		}
+	})
+	t.Run("not removable", func(t *testing.T) {
+		r, c := newRig(t), config(t)
+		ops := r.ops()
+		move := ops.Move
+		ops.Move = func(src, dst string) error {
+			if err := move(src, dst); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(src, "left"), nil, 0o600)
+		}
+		err := Run(c, ops)
+		if err == nil || errors.Is(err, errExec) || slices.Contains(r.calls, "drop") || slices.Contains(r.calls, "exec") {
+			t.Fatalf("%v %v", err, r.calls)
+		}
+	})
+}
