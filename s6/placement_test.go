@@ -236,7 +236,7 @@ func TestMissingMoveIsRefused(t *testing.T) {
 	r, c := newRig(t), config(t)
 	ops := r.ops()
 	ops.Move = nil
-	err := Run(c, ops)
+	err := noPanic(func() error { return Run(c, ops) })
 	if err == nil || errors.Is(err, errExec) || slices.Contains(r.calls, "mount") || slices.Contains(r.calls, "exec") {
 		t.Fatalf("%v %v", err, r.calls)
 	}
@@ -285,12 +285,23 @@ func TestUnusableBaseDirectoryStopsTheStart(t *testing.T) {
 // A path that cannot be examined is an error, not an accepted directory.
 func TestMissingBaseAndServiceDirectoriesAreErrors(t *testing.T) {
 	gone := filepath.Join(t.TempDir(), "gone")
-	if err := requireDir(gone); err == nil {
+	if err := noPanic(func() error { return requireDir(gone) }); err == nil {
 		t.Error("requireDir accepted a missing path")
 	}
-	if err := checkBase(gone); err == nil {
+	if err := noPanic(func() error { return checkBase(gone) }); err == nil {
 		t.Error("checkBase accepted a missing path")
 	}
+}
+
+// noPanic runs f and turns a panic into an error, so a missing guard is
+// reported by an assertion and the tests after it still run.
+func noPanic(f func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = nil // the guard is gone: the caller's assertion fails
+		}
+	}()
+	return f()
 }
 
 // Finish with no base directory has nothing to release and touches nothing.
