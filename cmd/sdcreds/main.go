@@ -212,7 +212,7 @@ func writeOutput(cmd *cobra.Command, path string, data []byte) error {
 		_, err := cmd.OutOrStdout().Write(data)
 		return err
 	}
-	return os.WriteFile(path, data, 0o600)
+	return writeFileAtomic(path, data)
 }
 
 func encryptCmd() *cobra.Command {
