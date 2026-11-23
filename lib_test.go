@@ -99,7 +99,16 @@ func goodSecret() []byte {
 	return append(p[:], secret4k...)
 }
 
+// needHostFiles skips a test of the host secret file, which only unix systems have.
+func needHostFiles(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("host secret files need a unix system")
+	}
+}
+
 func TestHostKeyFile(t *testing.T) {
+	needHostFiles(t)
 	p := writeSecret(t, 0o400, goodSecret())
 	k, err := sdcreds.HostKeyFile{Path: p, MachineID: fixedMID}.HostKey()
 	if err != nil || !bytes.Equal(k, secret4k) {
@@ -158,6 +167,7 @@ func TestHostKeyFile(t *testing.T) {
 // from its size alone,
 // before any buffer is allocated.
 func TestHostKeyBomb(t *testing.T) {
+	needHostFiles(t)
 	p := writeSecret(t, 0o600, goodSecret())
 	if err := os.Truncate(p, sdcreds.HostSecretMax+1); err != nil {
 		t.Fatal(err)
@@ -199,6 +209,7 @@ func heap() uint64 {
 }
 
 func TestHostSecretPath(t *testing.T) {
+	needHostFiles(t)
 	t.Setenv(sdcreds.HostSecretEnv, "")
 	os.Unsetenv(sdcreds.HostSecretEnv)
 	if p, err := sdcreds.HostSecretPath(); err != nil || p != sdcreds.DefaultHostSecretPath {
@@ -227,6 +238,7 @@ func TestHostSecretPath(t *testing.T) {
 }
 
 func TestCreateHostKey(t *testing.T) {
+	needHostFiles(t)
 	dir := filepath.Join(t.TempDir(), "sub", "dir")
 	p := filepath.Join(dir, "credential.secret")
 	k, err := sdcreds.CreateHostKey(p, fixedMID)
@@ -403,7 +415,7 @@ func TestEncryptRefusals(t *testing.T) {
 	if _, err := sdcreds.Encrypt(nil, sdcreds.EncryptOptions{Key: sdcreds.IDHost, HostKey: sdcreds.StaticHostKey(nil)}); !errors.Is(err, sdcreds.ErrInvalid) {
 		t.Errorf("empty host key: %v", err)
 	}
-	if _, err := sdcreds.Encrypt(nil, sdcreds.EncryptOptions{Key: sdcreds.IDHost, HostKey: sdcreds.HostKeyFile{Path: "/nonexistent/x", MachineID: fixedMID}}); !errors.Is(err, os.ErrNotExist) {
+	if _, err := sdcreds.Encrypt(nil, sdcreds.EncryptOptions{Key: sdcreds.IDHost, HostKey: sdcreds.HostKeyFile{Path: "/nonexistent/x", MachineID: fixedMID}}); err == nil || (runtime.GOOS != "windows" && !errors.Is(err, os.ErrNotExist)) {
 		t.Errorf("host key error not propagated: %v", err)
 	}
 	o = hostOpts("")
@@ -468,7 +480,7 @@ func TestDecryptRefusals(t *testing.T) {
 	if err := open(host, sdcreds.DecryptOptions{Timestamp: ts}); !errors.Is(err, sdcreds.ErrInvalid) {
 		t.Errorf("no key source: %v", err)
 	}
-	if err := open(host, sdcreds.DecryptOptions{HostKey: sdcreds.HostKeyFile{Path: "/nonexistent/x", MachineID: fixedMID}}); !errors.Is(err, os.ErrNotExist) {
+	if err := open(host, sdcreds.DecryptOptions{HostKey: sdcreds.HostKeyFile{Path: "/nonexistent/x", MachineID: fixedMID}}); err == nil || (runtime.GOOS != "windows" && !errors.Is(err, os.ErrNotExist)) {
 		t.Errorf("key error: %v", err)
 	}
 	// Name.

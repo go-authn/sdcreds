@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -23,6 +24,11 @@ import (
 func TestMain(m *testing.M) {
 	if os.Getenv("GENVECTORS_FAKE") == "1" {
 		os.Exit(fakeSystemdCreds(os.Args[1:], os.Stdout, os.Stderr))
+	}
+	if runtime.GOOS == "windows" {
+		// The generator writes a host secret file, which only unix systems have.
+		fmt.Println("genvectors: tests skipped, a host secret file needs a unix system")
+		os.Exit(0)
 	}
 	os.Exit(m.Run())
 }

@@ -23,7 +23,7 @@ func TestS6AsRoot(t *testing.T) {
 	}
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "sdcreds")
-	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+	if out, err := exec.Command("go", "build", "-buildvcs=false", "-o", bin, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build: %v: %s", err, out)
 	}
 	env := append(os.Environ(), "SYSTEMD_CREDENTIAL_SECRET="+filepath.Join(dir, "credential.secret"))

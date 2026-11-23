@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -179,7 +180,8 @@ func TestRunHappyPath(t *testing.T) {
 		t.Errorf("files at exec: %v", r.files)
 	}
 	for name, content := range map[string]string{"db-password": "hunter2", "token": "t0k3n"} {
-		if r.files[name] != content || r.perms[name] != 0o400 {
+		// Windows has no permission bits: only the content is checked there.
+		if r.files[name] != content || (runtime.GOOS != "windows" && r.perms[name] != 0o400) {
 			t.Errorf("%s: %q %v", name, r.files[name], r.perms[name])
 		}
 		if r.chown[name] != [2]int{1234, 5678} {
@@ -189,10 +191,10 @@ func TestRunHappyPath(t *testing.T) {
 	if r.chown["mnt"] != [2]int{1234, 5678} {
 		t.Errorf("directory owner %v", r.chown["mnt"])
 	}
-	if r.dirMode != 0o700 {
+	if runtime.GOOS != "windows" && r.dirMode != 0o700 {
 		t.Errorf("directory mode %v", r.dirMode)
 	}
-	if r.stageMode != 0o500 {
+	if runtime.GOOS != "windows" && r.stageMode != 0o500 {
 		t.Errorf("staged directory mode %v when moved into place", r.stageMode)
 	}
 	if _, err := os.Stat(dir); err == nil {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -17,7 +18,8 @@ func TestUnknownUserIsReported(t *testing.T) {
 	env(t)
 	_, _, err := run(t, "x", "encrypt", "--with-key=null", "--uid=no-such-user-zz9")
 	var unknown user.UnknownUserError
-	if !errors.As(err, &unknown) {
+	// Windows reports an unmapped account name by its own error type.
+	if err == nil || (runtime.GOOS != "windows" && !errors.As(err, &unknown)) {
 		t.Errorf("%v", err)
 	}
 }

@@ -119,7 +119,8 @@ func TestNullRoundTripThroughFiles(t *testing.T) {
 	if b, _ := os.ReadFile(out); string(b) != "hunter2\n" {
 		t.Errorf("%q", b)
 	}
-	if st, _ := os.Stat(out); st.Mode().Perm() != 0o600 {
+	// Windows has no permission bits to speak of.
+	if st, _ := os.Stat(out); runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
 		t.Errorf("mode %v", st.Mode())
 	}
 	renamed := filepath.Join(dir, "other")
