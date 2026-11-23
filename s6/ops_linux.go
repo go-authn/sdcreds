@@ -103,11 +103,15 @@ func remountRO(dir string) error {
 	return syscall.Mount("", target, "", syscall.MS_REMOUNT|syscall.MS_RDONLY|hardening, "")
 }
 
+// oPath is O_PATH (0o10000000 on every Linux architecture, asm-generic and x86
+// alike), which package syscall defines only on some of them.
+const oPath = 0o10000000
+
 // pin opens dir without following a symbolic link and returns a path through
 // the descriptor, which keeps naming that directory whatever happens to the
 // name; release closes it.
 func pin(dir string) (path string, release func(), err error) {
-	fd, err := syscall.Open(dir, syscall.O_PATH|syscall.O_NOFOLLOW|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
+	fd, err := syscall.Open(dir, oPath|syscall.O_NOFOLLOW|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return "", nil, &os.PathError{Op: "open", Path: dir, Err: err}
 	}
