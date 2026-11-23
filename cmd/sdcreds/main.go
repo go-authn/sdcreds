@@ -337,9 +337,8 @@ func decryptCmd() *cobra.Command {
 				HostKey: hk, Scope: sc,
 				AllowNull: k.allowNull, RefuseNull: k.refuseNull,
 			}
-			if !k.allowNull && !k.refuseNull {
-				o.NullPolicy = sdcreds.SystemNullPolicy()
-			}
+			// No probe of the system admits a null-key credential: it is refused
+			// on every machine unless --allow-null is given.
 			// An empty name, as --name= gives, validates nothing.
 			if name != "" {
 				o.Name = &name

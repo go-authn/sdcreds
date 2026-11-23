@@ -64,8 +64,10 @@ CI sets it, so an absent binary is a failure there.
 * A host secret whose machine id does not match is **refused** (`ErrHostKeyMachine`);
   systemd removes it.
 * `--with-key=auto` means `host`: there is no TPM2 here.
-* The null-key policy looks for a TPM2 as systemd does, minus
-  `LoaderTpm2ActivePcrBanks`.
+* A credential sealed with the null key has no secrecy: `sdcreds decrypt`
+  refuses it on every machine unless `--allow-null` is given (systemd instead
+  consults the TPM2 and SecureBoot state; that library policy,
+  `SystemNullPolicy`, is not used by the CLI).
 * `SDCREDS_MACHINE_ID_FILE` (command line only) points at another machine id file.
 * A variable IV size is accepted when reading, as in systemd; this library
   always writes 12 bytes.

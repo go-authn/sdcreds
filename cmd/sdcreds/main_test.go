@@ -561,3 +561,16 @@ func TestMainExitCode(t *testing.T) {
 		t.Errorf("--help exited with %d", code)
 	}
 }
+
+// A null-key credential is refused by decrypt on every machine unless
+// --allow-null is given; no probe of the system admits it.
+func TestDecryptRefusesNullByDefault(t *testing.T) {
+	env(t)
+	enc := mustRun(t, "x", "encrypt", "--with-key=null")
+	if _, _, err := run(t, enc, "decrypt"); !errors.Is(err, sdcreds.ErrNullRefused) {
+		t.Fatalf("null credential without --allow-null: %v", err)
+	}
+	if got := mustRun(t, enc, "decrypt", "--allow-null"); got != "x" {
+		t.Errorf("--allow-null: %q", got)
+	}
+}
