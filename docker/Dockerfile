@@ -5,13 +5,16 @@
 FROM golang:1.27.4 AS base
 
 ARG SYSTEMD_TAG=v262.2
+# The commit the tag must resolve to: a moved or re-created tag fails the build.
+ARG SYSTEMD_COMMIT=63511d7283d7d0e2a2fc28075481afaf1a7be8f5
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git ca-certificates build-essential meson ninja-build gperf pkg-config \
         python3-jinja2 libcap-dev libmount-dev libssl-dev libcrypt-dev \
         util-linux \
     && rm -rf /var/lib/apt/lists/*
 
-RUN git clone --depth 1 --branch "${SYSTEMD_TAG}" https://github.com/systemd/systemd /src/systemd
+RUN git clone --depth 1 --branch "${SYSTEMD_TAG}" https://github.com/systemd/systemd /src/systemd \
+    && test "$(git -C /src/systemd rev-parse HEAD)" = "${SYSTEMD_COMMIT}"
 WORKDIR /src/systemd
 RUN meson setup build -Dauto_features=disabled -Dopenssl=enabled -Dmode=release \
         -Dtests=false -Dlibmount=enabled -Dlibcrypt=enabled \
