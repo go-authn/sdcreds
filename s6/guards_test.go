@@ -155,7 +155,7 @@ func TestSetupFailuresAreNotIgnored(t *testing.T) {
 	})
 	t.Run("chown of the directory", func(t *testing.T) {
 		r, c := newRig(t), config(t)
-		r.failChown["web"] = errors.New("no such owner")
+		r.failChown["mnt"] = errors.New("no such owner")
 		err := refused(t, r, c, r.ops())
 		if !strings.Contains(err.Error(), "no such owner") || slices.Contains(r.calls, "remount") {
 			t.Errorf("%v %v", err, r.calls)

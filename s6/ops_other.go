@@ -16,5 +16,6 @@ func Real() Ops {
 		Unmount:        func(string) error { return ErrUnsupported },
 		DropPrivileges: func(User) error { return ErrUnsupported },
 		Exec:           func([]string, []string) error { return ErrUnsupported },
+		Move:           func(string, string) error { return ErrUnsupported },
 	}
 }

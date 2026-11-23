@@ -27,12 +27,14 @@ type rig struct {
 	// failChown makes the chown of one file (by base name) fail on its own
 	failChown map[string]error
 	user      User
-	// layers counts the mounts stacked on the directory
-	layers int
+	// layers counts the mounts stacked on each directory
+	layers map[string]int
 	// the credentials directory as it is when the command is executed
 	files   map[string]string
 	perms   map[string]os.FileMode
 	dirMode os.FileMode
+	// stageMode is the mode of the staging directory when it is moved into place
+	stageMode os.FileMode
 }
 
 func (r *rig) ops() Ops {
@@ -48,11 +50,30 @@ func (r *rig) ops() Ops {
 			return r.user, nil
 		},
 		Unshare: func() error { return rec("unshare") },
-		MountRAM: func(string) error {
-			r.layers++
+		MountRAM: func(dir string) error {
+			r.layers[dir]++
 			return rec("mount")
 		},
 		RemountRO: func(string) error { return rec("remount") },
+		Move: func(src, dst string) error {
+			if err := rec("move"); err != nil {
+				return err
+			}
+			// a bind of the mount on dst, then src is detached
+			if st, err := os.Stat(src); err == nil {
+				r.stageMode = st.Mode().Perm()
+			}
+			os.Chmod(src, 0o700) // a plain directory stands in for the mount
+			ents, _ := os.ReadDir(src)
+			for _, e := range ents {
+				if err := os.Rename(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
+					return err
+				}
+			}
+			r.layers[dst]++
+			r.layers[src]--
+			return nil
+		},
 		Chown: func(p string, uid, gid int) error {
 			r.chown[filepath.Base(p)] = [2]int{uid, gid}
 			if err := r.failChown[filepath.Base(p)]; err != nil {
@@ -64,11 +85,12 @@ func (r *rig) ops() Ops {
 			if err := rec("unmount"); err != nil {
 				return err
 			}
-			if r.layers == 0 {
+			if r.layers[dir] == 0 {
 				return ErrNotMounted
 			}
-			r.layers--
+			r.layers[dir]--
 			// the files of a real tmpfs vanish with the mount
+			os.Chmod(dir, 0o700)
 			ents, _ := os.ReadDir(dir)
 			for _, e := range ents {
 				os.Remove(filepath.Join(dir, e.Name()))
@@ -103,7 +125,7 @@ func (r *rig) snapshot(dir string) {
 }
 
 func newRig(t *testing.T) *rig {
-	return &rig{t: t, fail: map[string]error{}, chown: map[string][2]int{}, failChown: map[string]error{}, user: User{UID: 1234, GID: 5678, Groups: []int{5678, 9}}}
+	return &rig{t: t, fail: map[string]error{}, chown: map[string][2]int{}, failChown: map[string]error{}, layers: map[string]int{}, user: User{UID: 1234, GID: 5678, Groups: []int{5678, 9}}}
 }
 
 func nullDecrypt(name string, enc []byte) ([]byte, error) {
@@ -148,7 +170,7 @@ func TestRunHappyPath(t *testing.T) {
 	// The failure of exec itself is undone like any other: unmount comes last.
 	// The first unmount clears anything stacked there before; the last two peel
 	// the one layer and find nothing below it.
-	want := []string{"lookup", "unshare", "unmount", "mount", "chown", "chown", "chown", "remount", "drop", "exec", "unmount", "unmount"}
+	want := []string{"lookup", "unshare", "unmount", "mount", "chown", "chown", "chown", "remount", "move", "drop", "exec", "unmount", "unmount"}
 	if !slices.Equal(r.calls, want) {
 		t.Errorf("order of the privileged calls:\n got %v\nwant %v", r.calls, want)
 	}
@@ -164,11 +186,14 @@ func TestRunHappyPath(t *testing.T) {
 			t.Errorf("%s owner %v", name, r.chown[name])
 		}
 	}
-	if r.chown["web"] != [2]int{1234, 5678} {
-		t.Errorf("directory owner %v", r.chown["web"])
+	if r.chown["mnt"] != [2]int{1234, 5678} {
+		t.Errorf("directory owner %v", r.chown["mnt"])
 	}
 	if r.dirMode != 0o700 {
 		t.Errorf("directory mode %v", r.dirMode)
+	}
+	if r.stageMode != 0o500 {
+		t.Errorf("staged directory mode %v when moved into place", r.stageMode)
 	}
 	if _, err := os.Stat(dir); err == nil {
 		t.Error("a directory is left after the failed exec")
@@ -215,7 +240,7 @@ func TestRunValidation(t *testing.T) {
 
 func TestRunLeavesNothingBehind(t *testing.T) {
 	boom := errors.New("boom")
-	for _, step := range []string{"lookup", "unshare", "mount", "chown", "remount", "drop"} {
+	for _, step := range []string{"lookup", "unshare", "mount", "chown", "remount", "move", "drop"} {
 		r, c := newRig(t), config(t)
 		c.Unshare = true
 		r.fail[step] = boom

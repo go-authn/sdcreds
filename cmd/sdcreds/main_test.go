@@ -386,18 +386,32 @@ func TestSetupNeverOverwrites(t *testing.T) {
 func fakeOps(calls *[]string, execErr error) func() s6.Ops {
 	return func() s6.Ops {
 		rec := func(n string) error { *calls = append(*calls, n); return nil }
-		layers := 0
+		layers := map[string]int{}
 		return s6.Ops{
 			LookupUser: func(string) (s6.User, error) { rec("lookup"); return s6.User{UID: 1, GID: 1}, nil },
-			Unshare:    func() error { return rec("unshare") }, MountRAM: func(string) error { layers++; return rec("mount") },
+			Unshare:    func() error { return rec("unshare") }, MountRAM: func(d string) error { layers[d]++; return rec("mount") },
 			Chown:     func(string, int, int) error { return nil },
 			RemountRO: func(string) error { return rec("remount") },
+			Move: func(src, dst string) error {
+				rec("move")
+				os.Chmod(src, 0o700)
+				ents, _ := os.ReadDir(src)
+				for _, e := range ents {
+					if err := os.Rename(filepath.Join(src, e.Name()), filepath.Join(dst, e.Name())); err != nil {
+						return err
+					}
+				}
+				layers[dst]++
+				layers[src]--
+				return nil
+			},
 			Unmount: func(d string) error {
 				rec("unmount")
-				if layers == 0 {
+				if layers[d] == 0 {
 					return s6.ErrNotMounted
 				}
-				layers--
+				layers[d]--
+				os.Chmod(d, 0o700)
 				ents, _ := os.ReadDir(d)
 				for _, e := range ents {
 					os.Remove(filepath.Join(d, e.Name()))
@@ -487,7 +501,7 @@ func TestS6RunAndFinish(t *testing.T) {
 	if err != nil && !errors.Is(err, boom) {
 		t.Fatal(err)
 	}
-	want := "lookup unshare unmount mount remount drop exec /bin/web -v unmount unmount"
+	want := "lookup unshare unmount mount remount move drop exec /bin/web -v unmount unmount"
 	if strings.Join(calls, " ") != want {
 		t.Errorf("calls: %v", calls)
 	}
@@ -514,6 +528,19 @@ func TestS6RunAndFinish(t *testing.T) {
 	for _, args := range [][]string{{"s6-run"}, {"s6-run", "--service=web", "--user=u", "--source=/x"}, {"s6-run", "--service=web", "--source=/x", "--", "c"}, {"s6-finish"}} {
 		if _, _, err := run(t, "", args...); err == nil {
 			t.Errorf("%v accepted", args)
+		}
+	}
+}
+
+// The default base directory is not the one systemd owns.
+func TestS6DefaultBaseDirectory(t *testing.T) {
+	for _, name := range []string{"s6-run", "s6-finish"} {
+		cmd, _, err := RootCmd().Find([]string{name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f := cmd.Flags().Lookup("base-dir"); f == nil || f.DefValue != "/run/sdcreds" {
+			t.Errorf("%s: %v", name, f)
 		}
 	}
 }

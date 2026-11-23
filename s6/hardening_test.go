@@ -16,12 +16,13 @@ import (
 // Finish peels every layer before it removes the directory.
 func TestStackedMountsAreAllRemoved(t *testing.T) {
 	r, c := newRig(t), config(t)
-	r.layers = 2
+	dir := Dir(c.BaseDir, "web")
+	r.layers[dir] = 2
 	ops := r.ops()
 	var seen = -1
 	mount := ops.MountRAM
 	ops.MountRAM = func(d string) error {
-		seen = r.layers
+		seen = r.layers[dir]
 		return mount(d)
 	}
 	if err := Run(c, ops); !errors.Is(err, errExec) {
@@ -30,19 +31,19 @@ func TestStackedMountsAreAllRemoved(t *testing.T) {
 	if seen != 0 {
 		t.Errorf("%d mounts were still stacked when the new one was made", seen)
 	}
-	if r.layers != 0 {
-		t.Errorf("%d layers left after a failed exec", r.layers)
+	if r.layers[dir] != 0 {
+		t.Errorf("%d layers left after a failed exec", r.layers[dir])
 	}
 
 	base := t.TempDir()
 	os.Mkdir(Dir(base, "web"), 0o700)
 	r = newRig(t)
-	r.layers = 3
+	r.layers[Dir(base, "web")] = 3
 	if err := Finish("web", base, r.ops()); err != nil {
 		t.Fatal(err)
 	}
-	if r.layers != 0 {
-		t.Errorf("Finish left %d layers", r.layers)
+	if n := r.layers[Dir(base, "web")]; n != 0 {
+		t.Errorf("Finish left %d layers", n)
 	}
 	if _, err := os.Stat(Dir(base, "web")); err == nil {
 		t.Error("directory kept")

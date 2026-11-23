@@ -407,7 +407,7 @@ type s6Flags struct {
 func (f *s6Flags) register(cmd *cobra.Command, run bool) {
 	fl := cmd.Flags()
 	fl.StringVar(&f.service, "service", "", "service name (the credential directory is BASE-DIR/SERVICE)")
-	fl.StringVar(&f.baseDir, "base-dir", "/run/credentials", "absolute directory holding one directory per service")
+	fl.StringVar(&f.baseDir, "base-dir", "/run/sdcreds", "absolute directory holding one directory per service (not /run/credentials: that one belongs to systemd)")
 	_ = cmd.MarkFlagRequired("service")
 	if run {
 		fl.StringVar(&f.user, "user", "", "user that owns the credentials and runs the command")

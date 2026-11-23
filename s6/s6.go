@@ -19,6 +19,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/go-authn/sdcreds"
 )
@@ -57,6 +58,24 @@ type Ops struct {
 	// Resolve finds the executable of argv[0]; optional. Run calls it before
 	// anything is mounted.
 	Resolve func(argv0 string) (string, error)
+	// Move makes the mount at src appear at dst and detaches src.
+	Move func(src, dst string) error
+	// FSType names the file system at dir ("tmpfs", "ramfs", or anything else);
+	// optional. Only a tmpfs or ramfs is ever unmounted.
+	FSType func(dir string) (string, error)
+}
+
+// requireDir refuses anything but a real directory at dir (a symlink is not
+// followed).
+func requireDir(dir string) error {
+	st, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if !st.IsDir() {
+		return fmt.Errorf("s6: %s is not a directory (a symbolic link is not followed)", dir)
+	}
+	return nil
 }
 
 // Config describes one run.
@@ -137,20 +156,26 @@ func load(c Config) ([]entry, error) {
 	return out, nil
 }
 
-// readLimited reads a regular file (not a symlink) of bounded size.
+// readLimited reads a regular file (not a symlink) of bounded size. The file is
+// opened once, without following a link or waiting on a pipe, and judged by
+// what the descriptor says: nothing can be swapped between the check and the
+// read.
 func readLimited(path string) ([]byte, error) {
-	st, err := os.Lstat(path)
+	f, err := openSource(path)
+	if errors.Is(err, syscall.ELOOP) {
+		return nil, fmt.Errorf("s6: %s is not a regular file (a symbolic link is not followed)", path)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("s6: %s: %w", path, err)
+	}
+	defer f.Close()
+	st, err := f.Stat()
 	if err != nil {
 		return nil, err
 	}
 	if !st.Mode().IsRegular() {
 		return nil, fmt.Errorf("s6: %s is not a regular file", path)
 	}
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
 	b, err := readBounded(f)
 	if err != nil {
 		return nil, fmt.Errorf("s6: %s: %w", path, err)
@@ -220,43 +245,72 @@ func Run(c Config, ops Ops) (err error) {
 	if err := os.MkdirAll(c.BaseDir, 0o755); err != nil {
 		return err
 	}
+	// Whoever can write to the base directory can swap what is mounted or
+	// unmounted under it.
+	if err := checkBase(c.BaseDir); err != nil {
+		return err
+	}
 	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 		return err
+	}
+	if err := requireDir(dir); err != nil {
+		return err
+	}
+	if ops.Move == nil {
+		return errors.New("s6: no way to move the staged mount into place")
 	}
 	// A mount left by an earlier run (or a stack of them) must not survive
 	// under the new one.
 	if err := unmountAll(ops, dir); err != nil {
 		return fmt.Errorf("s6: %w", err)
 	}
-	mounted := false
+	// The credentials are written and frozen in a staging mount that sits under
+	// a directory only root can enter, then moved to dir: until then no process
+	// of the service user can reach them, let alone change them.
+	stageRoot, err := os.MkdirTemp(c.BaseDir, ".stage-")
+	if err != nil {
+		return err
+	}
+	stage := filepath.Join(stageRoot, "mnt")
+	staged, placed := false, false
 	defer func() {
 		if err == nil {
 			return
 		}
 		var left error
-		if mounted {
+		if staged {
+			if uerr := unmountAll(ops, stage); uerr != nil {
+				left = fmt.Errorf("credentials left mounted at %s: %w", stage, uerr)
+			}
+		}
+		if placed {
 			if uerr := unmountAll(ops, dir); uerr != nil {
-				left = fmt.Errorf("credentials left mounted at %s: %w", dir, uerr)
+				left = errors.Join(left, fmt.Errorf("credentials left mounted at %s: %w", dir, uerr))
 			}
 		}
 		if left == nil {
-			if rerr := os.Remove(dir); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
-				left = fmt.Errorf("could not remove %s: %w", dir, rerr)
+			for _, p := range []string{stage, stageRoot, dir} {
+				if rerr := os.Remove(p); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+					left = errors.Join(left, fmt.Errorf("could not remove %s: %w", p, rerr))
+				}
 			}
 		}
 		if left != nil {
 			err = fmt.Errorf("%w; %w", err, left)
 		}
 	}()
-	if err := ops.MountRAM(dir); err != nil {
+	if err := os.Mkdir(stage, 0o700); err != nil {
+		return err
+	}
+	if err := ops.MountRAM(stage); err != nil {
 		return fmt.Errorf("s6: mount: %w", err)
 	}
-	mounted = true
-	if err := os.Chmod(dir, 0o700); err != nil {
+	staged = true
+	if err := os.Chmod(stage, 0o700); err != nil {
 		return err
 	}
 	for _, e := range creds {
-		p := filepath.Join(dir, e.name)
+		p := filepath.Join(stage, e.name)
 		f, err := create(p)
 		if err != nil {
 			return err
@@ -270,11 +324,24 @@ func Run(c Config, ops Ops) (err error) {
 			return err
 		}
 	}
-	if err := ops.Chown(dir, u.UID, u.GID); err != nil {
+	if err := ops.Chown(stage, u.UID, u.GID); err != nil {
 		return err
 	}
-	if err := ops.RemountRO(dir); err != nil {
+	// Nothing writes into it any more: owner may read and enter, no more.
+	if err := os.Chmod(stage, 0o500); err != nil {
+		return err
+	}
+	if err := ops.RemountRO(stage); err != nil {
 		return fmt.Errorf("s6: remount read-only: %w", err)
+	}
+	if err := ops.Move(stage, dir); err != nil {
+		return fmt.Errorf("s6: move mount into place: %w", err)
+	}
+	staged, placed = false, true
+	for _, p := range []string{stage, stageRoot} {
+		if err := os.Remove(p); err != nil {
+			return fmt.Errorf("s6: %w", err)
+		}
 	}
 	env := slices.DeleteFunc(slices.Clone(c.Env), func(kv string) bool { return strings.HasPrefix(kv, EnvVar+"=") })
 	env = append(env, EnvVar+"="+dir)
@@ -291,6 +358,20 @@ const maxLayers = 64
 // single unmount would uncover the layer below it.
 func unmountAll(ops Ops, dir string) error {
 	for i := 0; i < maxLayers; i++ {
+		// Only a memory file system is ever detached: what else is mounted
+		// there was not made by this package.
+		if ops.FSType != nil {
+			typ, err := ops.FSType(dir)
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			if typ != "tmpfs" && typ != "ramfs" {
+				return nil
+			}
+		}
 		err := ops.Unmount(dir)
 		if errors.Is(err, ErrNotMounted) || errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -310,6 +391,18 @@ func Finish(service, base string, ops Ops) error {
 		return err
 	}
 	dir := Dir(base, service)
+	if _, err := os.Stat(base); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err := checkBase(base); err != nil {
+		return err
+	}
+	if _, err := os.Lstat(dir); errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err := requireDir(dir); err != nil {
+		return err
+	}
 	if err := unmountAll(ops, dir); err != nil {
 		return fmt.Errorf("s6: unmount %s: %w", dir, err)
 	}
