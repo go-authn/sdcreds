@@ -25,7 +25,7 @@ var osExit = os.Exit
 
 // MachineIDEnv names a file read instead of /etc/machine-id. It holds no
 // secret, only a path; systemd has no such variable.
-const MachineIDEnv = "SDCREDS_MACHINE_ID_FILE"
+const MachineIDEnv = s6.MachineIDEnv
 
 func main() {
 	cmd := RootCmd()

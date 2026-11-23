@@ -166,6 +166,19 @@ func TestStagingMountIsPrivateUntilPlaced(t *testing.T) {
 	}
 }
 
+// The service is not handed the paths of the host's key material.
+func TestServiceEnvironmentHoldsNoKeyPaths(t *testing.T) {
+	r, c := newRig(t), config(t)
+	c.Env = []string{"PATH=/bin", "SYSTEMD_CREDENTIAL_SECRET=/etc/credstore/s", "SDCREDS_MACHINE_ID_FILE=/x", "SYSTEMD_CREDENTIAL_SECRET_X=keep", "HOME=/h"}
+	if err := Run(c, r.ops()); !errors.Is(err, errExec) {
+		t.Fatal(err)
+	}
+	want := []string{"PATH=/bin", "SYSTEMD_CREDENTIAL_SECRET_X=keep", "HOME=/h", EnvVar + "=" + Dir(c.BaseDir, "web")}
+	if !slices.Equal(r.env, want) {
+		t.Errorf("env %v", r.env)
+	}
+}
+
 // A failure of the move leaves neither a mount nor a directory.
 func TestFailedMoveLeavesNothing(t *testing.T) {
 	r, c := newRig(t), config(t)

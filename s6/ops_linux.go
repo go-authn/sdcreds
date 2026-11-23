@@ -34,6 +34,9 @@ func Real() Ops {
 	}
 }
 
+// lookupUser resolves the account with os/user. Built without cgo (the usual
+// static build) that reads /etc/passwd and /etc/group only, with no NSS: the
+// supplementary groups that LDAP or SSSD would give are then missing.
 func lookupUser(name string) (User, error) {
 	u, err := user.Lookup(name)
 	if err != nil {
@@ -157,7 +160,41 @@ func fsType(dir string) (string, error) {
 	return fmt.Sprintf("0x%x", uint32(st.Type)), nil
 }
 
+// prctl(2) options used by dropPrivileges.
+const (
+	prCapbsetRead   = 23
+	prCapbsetDrop   = 24
+	prSetNoNewPrivs = 38
+	capLastCapMax   = 63
+)
+
+func prctl(option, arg2 uintptr) (uintptr, error) {
+	r, _, errno := syscall.RawSyscall6(syscall.SYS_PRCTL, option, arg2, 0, 0, 0, 0)
+	if errno != 0 {
+		return 0, errno
+	}
+	return r, nil
+}
+
+// dropPrivileges runs on the thread that will execute the command (Run locks
+// it): no_new_privs and the bounding set belong to the thread and are
+// inherited across exec. The service can neither gain privileges from a
+// set-user-id file nor get back a capability, and the drop is checked.
 func dropPrivileges(u User) error {
+	if _, err := prctl(prSetNoNewPrivs, 1); err != nil {
+		return fmt.Errorf("no_new_privs: %w", err)
+	}
+	for c := uintptr(0); c <= capLastCapMax; c++ {
+		if _, err := prctl(prCapbsetRead, c); err != nil {
+			if errors.Is(err, syscall.EINVAL) {
+				break // past the last capability of this kernel
+			}
+			return fmt.Errorf("capability bounding set: %w", err)
+		}
+		if _, err := prctl(prCapbsetDrop, c); err != nil {
+			return fmt.Errorf("capability bounding set: %w", err)
+		}
+	}
 	groups := u.Groups
 	if len(groups) == 0 {
 		groups = []int{u.GID}
@@ -168,7 +205,14 @@ func dropPrivileges(u User) error {
 	if err := syscall.Setgid(u.GID); err != nil {
 		return err
 	}
-	return syscall.Setuid(u.UID)
+	if err := syscall.Setuid(u.UID); err != nil {
+		return err
+	}
+	// Whatever the kernel said, root must not be recoverable.
+	if u.UID != 0 && syscall.Setuid(0) == nil {
+		return errors.New("privileges were not dropped: setuid(0) succeeded")
+	}
+	return nil
 }
 
 func execve(argv, env []string) error {

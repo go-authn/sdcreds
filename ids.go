@@ -59,8 +59,11 @@ const (
 	// FieldMax is CREDENTIAL_FIELD_SIZE_MAX, the bound for IV, block and tag
 	// sizes (cu.c:778).
 	FieldMax = 16 << 10
-	// HostSecretMax is the biggest host secret file accepted (cu.c:617).
-	HostSecretMax = 16 << 20
+	// HostSecretMax is the biggest host secret file accepted: the machine id
+	// (16 bytes) and the 4096 bytes of key material systemd generates. systemd
+	// itself reads up to 16 MiB (cu.c:617) but aborts on a secret over 4096
+	// bytes, so a bigger file is a key that systemd could not use either.
+	HostSecretMax = 16 + 4096
 
 	keySize   = 32 // AES-256 (cu.c:1104)
 	blockSize = 1  // EVP_CIPHER_get_block_size(aes-256-gcm), see DESIGN open question 1

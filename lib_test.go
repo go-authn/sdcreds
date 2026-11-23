@@ -154,7 +154,8 @@ func TestHostKeyFile(t *testing.T) {
 	}
 }
 
-// TestHostKeyBomb: a host secret over 16 MiB is refused from its size alone,
+// TestHostKeyBomb: a host secret over HostSecretMax (16+4096 bytes) is refused
+// from its size alone,
 // before any buffer is allocated.
 func TestHostKeyBomb(t *testing.T) {
 	p := writeSecret(t, 0o600, goodSecret())
@@ -172,7 +173,7 @@ func TestHostKeyBomb(t *testing.T) {
 	if grew := heap() - before; grew > 1<<20 {
 		t.Fatalf("the refusal allocated %d bytes", grew)
 	}
-	// Exactly 16 MiB is accepted.
+	// Exactly HostSecretMax is accepted.
 	if err := os.Chmod(p, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +184,10 @@ func TestHostKeyBomb(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := (sdcreds.HostKeyFile{Path: p, MachineID: fixedMID}).HostKey(); err != nil {
-		t.Fatalf("16 MiB: %v", err)
+		t.Fatalf("HostSecretMax: %v", err)
+	}
+	if sdcreds.HostSecretMax != 16+4096 {
+		t.Errorf("HostSecretMax = %d", sdcreds.HostSecretMax)
 	}
 }
 

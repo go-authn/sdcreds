@@ -31,6 +31,9 @@ const (
 	MaxEntries = 1024
 	// EnvVar is the variable systemd sets (systemd.exec(5)).
 	EnvVar = "CREDENTIALS_DIRECTORY"
+	// MachineIDEnv is the variable of this package's tools that names the
+	// machine-id file; it is not handed to the service.
+	MachineIDEnv = "SDCREDS_MACHINE_ID_FILE"
 )
 
 // ErrUnsupported is returned by the stub Ops off Linux.
@@ -232,9 +235,10 @@ func Run(c Config, ops Ops) (err error) {
 	}
 	defer wipe(creds)
 
+	// The thread-bound state (mount namespace, bounding set, no_new_privs) is
+	// inherited by the exec, which therefore runs on this thread.
+	runtime.LockOSThread()
 	if c.Unshare {
-		// The namespace belongs to this thread, and so does the exec.
-		runtime.LockOSThread()
 		if err := ops.Unshare(); err != nil {
 			return fmt.Errorf("s6: unshare: %w", err)
 		}
@@ -343,7 +347,16 @@ func Run(c Config, ops Ops) (err error) {
 			return fmt.Errorf("s6: %w", err)
 		}
 	}
-	env := slices.DeleteFunc(slices.Clone(c.Env), func(kv string) bool { return strings.HasPrefix(kv, EnvVar+"=") })
+	// The service gets the directory of its own credentials and nothing that
+	// points at the key material of the host.
+	env := slices.DeleteFunc(slices.Clone(c.Env), func(kv string) bool {
+		for _, name := range []string{EnvVar, sdcreds.HostSecretEnv, MachineIDEnv} {
+			if strings.HasPrefix(kv, name+"=") {
+				return true
+			}
+		}
+		return false
+	})
 	env = append(env, EnvVar+"="+dir)
 	if err := ops.DropPrivileges(u); err != nil {
 		return fmt.Errorf("s6: drop privileges: %w", err)
