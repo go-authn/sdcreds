@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/go-authn/sdcreds"
+	"github.com/go-authn/sdcreds/s6"
 )
 
 // hostSealed prepares a credential "db" sealed with the host key of the files
@@ -57,6 +58,33 @@ func TestS6RunIgnoresTheKeyEnvironment(t *testing.T) {
 	if strings.Contains(strings.Join(*calls, " "), "mount") {
 		t.Errorf("mounted: %v", *calls)
 	}
+}
+
+// s6 supervises s6-run, so the exit status of the service is the one of s6-run.
+func TestS6RunExitsWithTheStatusOfTheService(t *testing.T) {
+	src, base, secret, mid := hostSealed(t)
+	asOwner(t, uint32(os.Getuid()))
+	calls := withOps(t)
+	fake := s6Ops
+	for _, code := range []int{0, 7, 143} {
+		s6Ops = func() s6.Ops {
+			o := fake()
+			o.Start = func(s6.User, []string, []string) (func() (int, error), error) {
+				return func() (int, error) { return code, nil }, nil
+			}
+			return o
+		}
+		got := -1
+		old := osExit
+		osExit = func(c int) { got = c }
+		_, _, err := run(t, "", "s6-run", "--service=web", "--user=svc", "--base-dir="+base, "--source="+src,
+			"--secret="+secret, "--machine-id-file="+mid, "--", "/bin/web")
+		osExit = old
+		if err != nil || (code == 0) != (got == -1) || (code != 0 && got != code) {
+			t.Errorf("status %d: exit %d, %v", code, got, err)
+		}
+	}
+	_ = calls
 }
 
 func TestS6RunKeyFlags(t *testing.T) {

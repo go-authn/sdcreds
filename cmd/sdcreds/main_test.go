@@ -419,8 +419,11 @@ func fakeOps(calls *[]string, execErr error) func() s6.Ops {
 				}
 				return nil
 			},
-			DropPrivileges: func(s6.User) error { return rec("drop") },
-			Exec:           func(argv, env []string) error { rec("exec " + strings.Join(argv, " ")); return execErr },
+			Start: func(_ s6.User, argv, env []string) (func() (int, error), error) {
+				rec("drop")
+				rec("exec " + strings.Join(argv, " "))
+				return nil, execErr
+			},
 		}
 	}
 }

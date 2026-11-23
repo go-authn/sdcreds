@@ -50,14 +50,19 @@ type User struct {
 
 // Ops are the system calls that need privileges.
 type Ops struct {
-	LookupUser     func(name string) (User, error)
-	Unshare        func() error // new mount namespace, mounts private
-	MountRAM       func(dir string) error
-	Chown          func(path string, uid, gid int) error
-	RemountRO      func(dir string) error
-	Unmount        func(dir string) error // lazy; ErrNotMounted if not mounted
-	DropPrivileges func(u User) error
-	Exec           func(argv []string, env []string) error
+	LookupUser func(name string) (User, error)
+	Unshare    func() error // new mount namespace, mounts private
+	MountRAM   func(dir string) error
+	Chown      func(path string, uid, gid int) error
+	RemountRO  func(dir string) error
+	Unmount    func(dir string) error // lazy; ErrNotMounted if not mounted
+	// Start runs argv as u, in the mount namespace of the caller, and reports
+	// whether the program was started: a failed exec (a file that is not a
+	// program, a file system that forbids execution) is the error of Start itself.
+	// The caller keeps its privileges, so it can still take the credentials away.
+	// wait blocks until the program ends and returns its exit status (128 plus the
+	// number of the signal that killed it).
+	Start func(u User, argv []string, env []string) (wait func() (int, error), err error)
 	// Resolve finds the executable of argv[0]; optional. Run calls it before
 	// anything is mounted.
 	Resolve func(argv0 string) (string, error)
@@ -231,8 +236,10 @@ var create = func(path string) (io.WriteCloser, error) {
 	return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o400)
 }
 
-// Run prepares the credentials directory and executes the command. It returns
-// only on failure, after undoing what it set up.
+// Run prepares the credentials directory, runs the command as the service user
+// in a child and waits for it, then undoes what it set up. It returns nil when
+// the service exits 0, an *ExitError for another status, and an error when
+// anything failed, the exec included.
 func Run(c Config, ops Ops) (err error) {
 	if err := validate(c.Service, c.BaseDir); err != nil {
 		return err
@@ -270,8 +277,8 @@ func Run(c Config, ops Ops) (err error) {
 	}
 	defer wipe(creds)
 
-	// The thread-bound state (mount namespace, bounding set, no_new_privs) is
-	// inherited by the exec, which therefore runs on this thread.
+	// The mount namespace belongs to this thread; Start gives it to the thread
+	// that starts the service.
 	runtime.LockOSThread()
 	if c.Unshare {
 		if err := ops.Unshare(); err != nil {
@@ -315,8 +322,8 @@ func Run(c Config, ops Ops) (err error) {
 	stage := filepath.Join(stageRoot, "mnt")
 	staged, placed := false, false
 	defer func() {
-		// Run never returns nil from here on (a failed exec is an error
-		// too), so every exit cleans up.
+		// Every exit from here on cleans up, while this process still has its
+		// privileges.
 		var left error
 		if staged {
 			if uerr := unmountAll(ops, stage); uerr != nil {
@@ -335,7 +342,9 @@ func Run(c Config, ops Ops) (err error) {
 				}
 			}
 		}
-		if left != nil {
+		if left != nil && err == nil {
+			err = left
+		} else if left != nil {
 			err = fmt.Errorf("%w; %w", err, left)
 		}
 	}()
@@ -394,10 +403,29 @@ func Run(c Config, ops Ops) (err error) {
 		return false
 	})
 	env = append(env, EnvVar+"="+dir)
-	if err := ops.DropPrivileges(u); err != nil {
-		return fmt.Errorf("s6: drop privileges: %w", err)
+	// This process keeps its privileges and its mount; the service runs in a
+	// child that drops them. A failure to exec is reported by Start, so the
+	// credentials are taken away below before Run fails.
+	wait, err := ops.Start(u, c.Command, env)
+	if err != nil {
+		return fmt.Errorf("s6: start %s: %w", c.Command[0], err)
 	}
-	return fmt.Errorf("s6: exec %s: %w", c.Command[0], ops.Exec(c.Command, env))
+	code, err := wait()
+	if err != nil {
+		return fmt.Errorf("s6: waiting for %s: %w", c.Command[0], err)
+	}
+	if code != 0 {
+		return &ExitError{Code: code}
+	}
+	return nil
+}
+
+// ExitError is returned by Run when the service ran and ended with a non-zero
+// status; the caller exits with Code.
+type ExitError struct{ Code int }
+
+func (e *ExitError) Error() string {
+	return fmt.Sprintf("s6: the service exited with status %d", e.Code)
 }
 
 // makeBase creates base and any missing parent, and sets 0755 on each

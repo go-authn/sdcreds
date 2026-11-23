@@ -23,19 +23,18 @@ const hardening = syscall.MS_NODEV | syscall.MS_NOEXEC | syscall.MS_NOSUID | msN
 // Real returns the Linux implementation; it needs root.
 func Real() Ops {
 	return Ops{
-		LookupUser:     lookupUser,
-		Unshare:        unshare,
-		MountRAM:       mountRAM,
-		Chown:          os.Lchown,
-		RemountRO:      remountRO,
-		Unmount:        unmount,
-		DropPrivileges: dropPrivileges,
-		Exec:           execve,
-		Resolve:        exec.LookPath,
-		Move:           move,
-		FSType:         fsType,
-		CanExec:        canExec,
-		MountSource:    mountSource,
+		LookupUser:  lookupUser,
+		Unshare:     unshare,
+		MountRAM:    mountRAM,
+		Chown:       os.Lchown,
+		RemountRO:   remountRO,
+		Unmount:     unmount,
+		Start:       start,
+		Resolve:     exec.LookPath,
+		Move:        move,
+		FSType:      fsType,
+		CanExec:     canExec,
+		MountSource: mountSource,
 	}
 }
 
@@ -125,8 +124,8 @@ func setThreadIDs(u User) (restore func() error, err error) {
 	restore = func() error {
 		var errs []error
 		for _, call := range []func() error{
-			func() error { return rawSetres(syscall.SYS_SETRESUID, 0) },
-			func() error { return rawSetres(syscall.SYS_SETRESGID, 0) },
+			func() error { return rawSetres(trapSetresuid, 0, 0) },
+			func() error { return rawSetres(trapSetresgid, 0, 0) },
 			func() error { return rawSetgroups(prev) },
 		} {
 			errs = append(errs, call())
@@ -140,16 +139,16 @@ func setThreadIDs(u User) (restore func() error, err error) {
 	if err := rawSetgroups(groups); err != nil {
 		return restore, err
 	}
-	if err := rawSetres(syscall.SYS_SETRESGID, u.GID); err != nil {
+	if err := rawSetres(trapSetresgid, u.GID, 0); err != nil {
 		return restore, err
 	}
-	return restore, rawSetres(syscall.SYS_SETRESUID, u.UID)
+	return restore, rawSetres(trapSetresuid, u.UID, 0)
 }
 
-// rawSetres sets the real and effective id of the calling thread to id and
-// keeps the saved id at 0, so that the thread can go back to root.
-func rawSetres(trap uintptr, id int) error {
-	if _, _, e := syscall.RawSyscall(trap, uintptr(id), uintptr(id), 0); e != 0 {
+// rawSetres sets the real and effective id of the calling thread to id and the
+// saved id to saved (0 lets the thread go back to root).
+func rawSetres(trap uintptr, id, saved int) error {
+	if _, _, e := syscall.RawSyscall(trap, uintptr(id), uintptr(id), uintptr(saved)); e != 0 {
 		return e
 	}
 	return nil
@@ -164,7 +163,7 @@ func rawSetgroups(g []int) error {
 	if len(ids) > 0 {
 		p = unsafe.Pointer(&ids[0])
 	}
-	if _, _, e := syscall.RawSyscall(syscall.SYS_SETGROUPS, uintptr(len(ids)), uintptr(p), 0); e != 0 {
+	if _, _, e := syscall.RawSyscall(trapSetgroups, uintptr(len(ids)), uintptr(p), 0); e != 0 {
 		return e
 	}
 	return nil
@@ -287,10 +286,11 @@ func prctl(option, arg2 uintptr) (uintptr, error) {
 	return r, nil
 }
 
-// dropPrivileges runs on the thread that will execute the command (Run locks
-// it): no_new_privs and the bounding set belong to the thread and are
-// inherited across exec. The service can neither gain privileges from a
-// set-user-id file nor get back a capability, and the drop is checked.
+// dropPrivileges runs on a locked thread that is never given back to the
+// runtime and that forks the service: no_new_privs, the bounding set and the
+// ids belong to the thread, and a forked child and its exec inherit them. The
+// service can neither gain privileges from a set-user-id file nor get back a
+// capability, and the drop is checked.
 func dropPrivileges(u User) error {
 	if _, err := prctl(prSetNoNewPrivs, 1); err != nil {
 		return fmt.Errorf("no_new_privs: %w", err)
@@ -310,26 +310,21 @@ func dropPrivileges(u User) error {
 	if len(groups) == 0 {
 		groups = []int{u.GID}
 	}
-	if err := syscall.Setgroups(groups); err != nil {
+	// The ids of this thread alone, and all three of them: the process keeps
+	// root, and this thread (which never goes back) passes what it is to the
+	// child it forks.
+	if err := rawSetgroups(groups); err != nil {
 		return err
 	}
-	if err := syscall.Setgid(u.GID); err != nil {
+	if err := rawSetres(trapSetresgid, u.GID, u.GID); err != nil {
 		return err
 	}
-	if err := syscall.Setuid(u.UID); err != nil {
+	if err := rawSetres(trapSetresuid, u.UID, u.UID); err != nil {
 		return err
 	}
 	// Whatever the kernel said, root must not be recoverable.
-	if u.UID != 0 && syscall.Setuid(0) == nil {
+	if u.UID != 0 && rawSetres(trapSetresuid, 0, 0) == nil {
 		return errors.New("privileges were not dropped: setuid(0) succeeded")
 	}
 	return nil
-}
-
-func execve(argv, env []string) error {
-	path, err := exec.LookPath(argv[0])
-	if err != nil {
-		return err
-	}
-	return syscall.Exec(path, argv, env)
 }

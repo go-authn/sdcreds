@@ -130,6 +130,63 @@ func TestCanExecWithoutResolve(t *testing.T) {
 	}
 }
 
+// A service that was started is waited for, and the credentials are taken away
+// after it ends, by the process that still has its privileges.
+func TestRunWaitsThenCleansUp(t *testing.T) {
+	boom := errors.New("wait failed")
+	for _, c := range []struct {
+		name string
+		code int
+		err  error
+	}{{"exit 0", 0, nil}, {"exit 3", 3, nil}, {"wait error", 0, boom}} {
+		r, cfg := newRig(t), config(t)
+		ops := r.ops()
+		ops.Start = func(User, []string, []string) (func() (int, error), error) {
+			r.calls = append(r.calls, "started")
+			return func() (int, error) {
+				r.calls = append(r.calls, "waited")
+				return c.code, c.err
+			}, nil
+		}
+		err := Run(cfg, ops)
+		var ee *ExitError
+		switch {
+		case c.err != nil:
+			if !errors.Is(err, boom) {
+				t.Errorf("%s: %v", c.name, err)
+			}
+		case c.code != 0:
+			if !errors.As(err, &ee) || ee.Code != c.code || ee.Error() == "" {
+				t.Errorf("%s: %v", c.name, err)
+			}
+		case err != nil:
+			t.Errorf("%s: %v", c.name, err)
+		}
+		i := slices.Index(r.calls, "waited")
+		if i < 0 || !slices.Contains(r.calls[i:], "unmount") {
+			t.Errorf("%s: the credentials are taken away after the service ends: %v", c.name, r.calls)
+		}
+		if _, err := os.Stat(Dir(cfg.BaseDir, "web")); err == nil {
+			t.Errorf("%s: the credentials directory is still there", c.name)
+		}
+	}
+}
+
+// A program that cannot be started leaves nothing mounted, and is never waited for.
+func TestFailedStartTakesTheCredentialsAway(t *testing.T) {
+	r, c := newRig(t), config(t)
+	ops := r.ops()
+	bad := errors.New("exec format error")
+	ops.Start = func(User, []string, []string) (func() (int, error), error) { return nil, bad }
+	err := Run(c, ops)
+	if !errors.Is(err, bad) || !slices.Contains(r.calls, "unmount") || r.layers[Dir(c.BaseDir, "web")] != 0 {
+		t.Errorf("%v %v %v", err, r.calls, r.layers)
+	}
+	if _, err := os.Stat(Dir(c.BaseDir, "web")); err == nil {
+		t.Error("the credentials directory is still there")
+	}
+}
+
 // Only a mount this package made is detached.
 func TestFinishDetachesOnlyItsOwnMounts(t *testing.T) {
 	for _, c := range []struct {

@@ -84,9 +84,17 @@ decrypts every file of `--source` **before** mounting anything, mounts a
 per-service `tmpfs` (`nodev,noexec,nosuid,nosymfollow,noswap`, mode 0700, size and
 inode count bounded; `ramfs` if the kernel lacks those options), writes the
 plaintext 0400 owned by the service user, remounts it read-only, sets
-`CREDENTIALS_DIRECTORY`, drops privileges and execs. Any failure undoes the
-mount. The mount lives in a private namespace by default (`--unshare=false` turns
-that off), so it disappears with the service. The command is looked up before
+`CREDENTIALS_DIRECTORY`, then starts the service in a child that drops privileges
+(`no_new_privs`, an empty capability set) and waits for it. `s6-run` keeps its
+privileges and the mount, so a program that cannot be executed (not an
+executable file, a `noexec` file system) is reported by the child's exec and the
+credentials are taken away before `s6-run` fails; the same happens when the
+service ends. `s6-run` is still the process that s6 supervises: it forwards
+`TERM`, `INT`, `HUP`, `QUIT`, `USR1`, `USR2`, `ALRM` and `CONT` to the service,
+exits with its status (128 plus the signal number if a signal killed it), hands
+on the descriptors it was given (a notification pipe, for one), and the service
+is killed if `s6-run` dies. The mount lives in a private namespace by default
+(`--unshare=false` turns that off), so it disappears with the service. The command is looked up before
 anything is mounted, and so is whether the service user may execute it. The
 base directory, when `s6-run` creates it, is made 0755 whatever the umask.
 Every mount is named `sdcreds`, and `s6-finish` (like `s6-run` before it mounts)
@@ -121,8 +129,9 @@ table here.
   library tests (`TestEncryptedMaxBoundary` and the bound tests in `lib_test.go`)
   only, not by interop vectors.
 * `mutsweep` catches every guard of `s6`, `cmd/sdcreds` and `internal/perf` by an
-  assertion. `s6/ops_linux.go` is excluded from a macOS sweep (build tags) and is
-  covered by the root integration test in the interop image.
+  assertion. `s6/ops_linux.go` and `s6/start_linux.go` are excluded from a macOS
+  sweep (build tags) and are covered by the root integration tests in the interop
+  image (bad executable, `noexec`, signals, exit status, parent death).
 
 ## Licence
 

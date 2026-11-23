@@ -89,9 +89,9 @@ func TestCommandIsResolvedBeforeMounting(t *testing.T) {
 	var resolved string
 	ops.Resolve = func(s string) (string, error) { resolved = s; return s, nil }
 	stuck := errors.New("operation not permitted")
-	ops.Exec = func([]string, []string) error {
-		r.fail["unmount"] = stuck // the privileges are gone: nothing can unmount
-		return errExec
+	ops.Start = func(User, []string, []string) (func() (int, error), error) {
+		r.fail["unmount"] = stuck // an unmount that fails
+		return nil, errExec
 	}
 	err = Run(c, ops)
 	if resolved != "/bin/web" {

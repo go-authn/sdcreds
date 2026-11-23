@@ -481,7 +481,14 @@ func s6RunCmd() *cobra.Command {
 					return pt, err
 				},
 			}
-			return s6.Run(c, s6Ops())
+			// s6 supervises this process: its exit status is the service's.
+			err := s6.Run(c, s6Ops())
+			var ee *s6.ExitError
+			if errors.As(err, &ee) {
+				osExit(ee.Code)
+				return nil
+			}
+			return err
 		},
 	}
 	f.register(cmd, true)

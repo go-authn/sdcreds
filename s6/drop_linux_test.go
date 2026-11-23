@@ -26,7 +26,7 @@ func TestDropHelper(t *testing.T) {
 	if syscall.Getuid() != 12345 || syscall.Geteuid() != 12345 {
 		t.Fatalf("uid %d/%d", syscall.Getuid(), syscall.Geteuid())
 	}
-	if syscall.Setuid(0) == nil {
+	if rawSetres(trapSetresuid, 0, 0) == nil {
 		t.Fatal("root is back")
 	}
 	if v, err := prctl(39, 0); err != nil || v != 1 { // PR_GET_NO_NEW_PRIVS

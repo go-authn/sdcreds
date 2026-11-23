@@ -98,8 +98,10 @@ func (r *rig) ops() Ops {
 			}
 			return nil
 		},
-		DropPrivileges: func(User) error { return rec("drop") },
-		Exec: func(argv, env []string) error {
+		Start: func(_ User, argv, env []string) (func() (int, error), error) {
+			if err := rec("drop"); err != nil {
+				return nil, err
+			}
 			r.argv, r.env = argv, env
 			for _, kv := range env {
 				if dir, ok := strings.CutPrefix(kv, EnvVar+"="); ok {
@@ -107,7 +109,7 @@ func (r *rig) ops() Ops {
 				}
 			}
 			rec("exec")
-			return errExec
+			return nil, errExec
 		},
 	}
 }
