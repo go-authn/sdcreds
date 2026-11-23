@@ -111,8 +111,14 @@ type EncryptOptions struct {
 	Scope *Scope
 	// RefuseNull makes IDNull an error (CREDENTIAL_REFUSE_NULL, cu.c:1081).
 	RefuseNull bool
-	// Rand supplies the 12-byte IV; nil means crypto/rand. Tests and
-	// interoperability checks inject a fixed IV here.
+	// Rand supplies the 12-byte IV; nil means crypto/rand, and nil is what every
+	// real caller must use. A fixed or repeated IV under one key lets anyone who
+	// sees two credentials recover the XOR of their plaintexts and forge
+	// others: AES-GCM is catastrophically broken by a repeated nonce. The field
+	// exists only so that tests and interoperability checks can inject a known
+	// IV. With random 96-bit IVs a key must not seal more than 2^32 credentials
+	// (NIST SP 800-38D, 8.3); a host key sealing credentials one per service is
+	// far below that.
 	Rand io.Reader
 }
 

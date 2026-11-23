@@ -19,6 +19,9 @@ func NameValid(s string) bool {
 	return true
 }
 
+// ivMax is the longest IV that Parse accepts (systemd writes 12 bytes).
+const ivMax = 128
+
 func align8(n uint64) uint64 { return (n + 7) &^ 7 }
 
 // Header is the unencrypted, authenticated header of a credential
@@ -87,8 +90,10 @@ func Parse(blob []byte) (*Header, error) {
 	}
 	// The cipher expectations of cu.c:1591-1608: this version speaks AES-256-GCM
 	// only, which fixes the block and tag sizes (and so bounds them by FieldMax);
-	// the IV size is bounded by FieldMax (cu.c:1573) and may not be zero.
-	if h.BlockSize != blockSize || h.TagSize != tagSize || h.IVSize == 0 || h.IVSize > FieldMax {
+	// the IV size is bounded by FieldMax (cu.c:1573) and may not be zero. Past
+	// ivMax it is refused: a GCM nonce that long is only ever hashed down, and
+	// no writer produces one.
+	if h.BlockSize != blockSize || h.TagSize != tagSize || h.IVSize == 0 || h.IVSize > FieldMax || h.IVSize > ivMax {
 		return nil, ErrFormat
 	}
 	var scoped uint64

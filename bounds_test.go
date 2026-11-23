@@ -75,7 +75,7 @@ func TestIVSizeBound(t *testing.T) {
 	for _, c := range []struct {
 		iv uint32
 		ok bool
-	}{{0, false}, {1, true}, {12, true}, {sdcreds.FieldMax - 1, true}, {sdcreds.FieldMax, true}, {sdcreds.FieldMax + 1, false}, {1 << 31, false}} {
+	}{{0, false}, {1, true}, {12, true}, {128, true}, {129, false}, {sdcreds.FieldMax - 1, false}, {sdcreds.FieldMax, false}, {sdcreds.FieldMax + 1, false}, {1 << 31, false}} {
 		safely(t, "iv", func() {
 			if c.iv > 1<<20 {
 				// the blob cannot hold the IV: refused by the length check
