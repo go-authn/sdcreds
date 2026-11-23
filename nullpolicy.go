@@ -77,5 +77,5 @@ func NullPolicyFor(policy BootPolicy, firstBoot, haveTPM2, secureBoot bool) func
 
 // SystemNullPolicy reads the kernel command line, the EFI SecureBoot variable
 // and the TPM2 hints of this machine, as systemd does. Off Linux it accepts.
-// It is a variable so that tests and other platforms can replace it.
-var SystemNullPolicy = systemNullPolicy
+// It is a function, not a variable, so that no importer can replace it.
+func SystemNullPolicy() func() error { return systemNullPolicy() }

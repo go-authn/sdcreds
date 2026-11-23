@@ -379,6 +379,45 @@ func fakeOps(calls *[]string, execErr error) func() s6.Ops {
 	}
 }
 
+// s6-run takes neither a nameless credential nor key material from the
+// environment of the service.
+func TestS6RunHardening(t *testing.T) {
+	dir := env(t)
+	src, base := filepath.Join(dir, "src"), filepath.Join(dir, "run")
+	os.MkdirAll(src, 0o700)
+	os.MkdirAll(base, 0o700)
+	defer func(o func() s6.Ops) { s6Ops = o }(s6Ops)
+	var calls []string
+	s6Ops = fakeOps(&calls, errors.New("exec reached"))
+	runS6 := func() error {
+		calls = nil
+		_, _, err := run(t, "", "s6-run", "--service=web", "--user=svc", "--base-dir="+base, "--source="+src, "--allow-null", "--", "/bin/web")
+		return err
+	}
+	// Nameless: not even --allow-null admits it.
+	nameless := mustRun(t, "x", "encrypt", "--with-key=null", "--name=")
+	os.WriteFile(filepath.Join(src, "db"), []byte(nameless), 0o600)
+	if err := runS6(); !errors.Is(err, sdcreds.ErrNameMismatch) || strings.Contains(strings.Join(calls, " "), "mount") {
+		t.Errorf("nameless credential: %v %v", err, calls)
+	}
+	// The environment switches that disable the name and expiry checks of
+	// `decrypt` do not reach the privileged helper.
+	t.Setenv("SYSTEMD_CREDENTIAL_VALIDATE_NAME", "0")
+	t.Setenv("SYSTEMD_CREDENTIAL_VALIDATE_NOT_AFTER", "0")
+	os.Remove(filepath.Join(src, "db"))
+	enc := mustRun(t, "x", "encrypt", "--with-key=null", "--name=db")
+	os.WriteFile(filepath.Join(src, "renamed"), []byte(enc), 0o600)
+	if err := runS6(); !errors.Is(err, sdcreds.ErrNameMismatch) {
+		t.Errorf("name check switched off by the environment: %v", err)
+	}
+	os.Remove(filepath.Join(src, "renamed"))
+	old := mustRun(t, "x", "encrypt", "--with-key=null", "--name=db", "--timestamp=@1", "--not-after=@2")
+	os.WriteFile(filepath.Join(src, "db"), []byte(old), 0o600)
+	if err := runS6(); !errors.Is(err, sdcreds.ErrExpired) {
+		t.Errorf("expiry check switched off by the environment: %v", err)
+	}
+}
+
 func TestS6RunAndFinish(t *testing.T) {
 	dir := env(t)
 	src, base := filepath.Join(dir, "src"), filepath.Join(dir, "run")
@@ -392,13 +431,17 @@ func TestS6RunAndFinish(t *testing.T) {
 	var calls []string
 	boom := errors.New("exec reached")
 	s6Ops = fakeOps(&calls, boom)
-	// The null key is accepted or refused by the boot policy of the machine;
-	// this test is about the plumbing, so the policy is not the question.
-	_, _, err := run(t, "", "s6-run", "--service=web", "--user=svc", "--base-dir="+base, "--source="+src, "--unshare", "--", "/bin/web", "-v")
+	// Without --allow-null a null-key credential is refused before anything is
+	// mounted, whatever the boot policy of the machine says.
+	if _, _, err := run(t, "", "s6-run", "--service=web", "--user=svc", "--base-dir="+base, "--source="+src, "--unshare", "--", "/bin/web", "-v"); !errors.Is(err, sdcreds.ErrNullRefused) {
+		t.Fatalf("null credential without --allow-null: %v", err)
+	}
+	if strings.Contains(strings.Join(calls, " "), "mount") {
+		t.Errorf("mounted before refusing: %v", calls)
+	}
+	calls = nil
+	_, _, err := run(t, "", "s6-run", "--service=web", "--user=svc", "--base-dir="+base, "--source="+src, "--unshare", "--allow-null", "--", "/bin/web", "-v")
 	if err != nil && !errors.Is(err, boom) {
-		if errors.Is(err, sdcreds.ErrNullRefused) {
-			t.Skipf("this machine's boot policy refuses the null key: %v", err)
-		}
 		t.Fatal(err)
 	}
 	want := "lookup unshare mount remount drop exec /bin/web -v unmount"
@@ -408,7 +451,7 @@ func TestS6RunAndFinish(t *testing.T) {
 	// A wrongly named credential fails before anything is mounted.
 	os.Rename(filepath.Join(src, "db"), filepath.Join(src, "renamed"))
 	calls = nil
-	if _, _, err := run(t, "", "s6-run", "--service=web", "--user=svc", "--base-dir="+base, "--source="+src, "--", "/bin/web"); !errors.Is(err, sdcreds.ErrNameMismatch) {
+	if _, _, err := run(t, "", "s6-run", "--service=web", "--user=svc", "--base-dir="+base, "--source="+src, "--allow-null", "--", "/bin/web"); !errors.Is(err, sdcreds.ErrNameMismatch) {
 		t.Errorf("%v", err)
 	}
 	if strings.Contains(strings.Join(calls, " "), "mount") {

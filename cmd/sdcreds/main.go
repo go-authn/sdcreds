@@ -271,6 +271,12 @@ func encryptCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if k.withKey == "null" {
+				fmt.Fprintln(cmd.ErrOrStderr(), "Credential will be secured with the null key, it offers no secrecy.")
+			}
+			if o.Name == "" {
+				fmt.Fprintln(cmd.ErrOrStderr(), "Credential carries no name, so a service that requires one (s6-run) will refuse it; pass --name=NAME.")
+			}
 			if !k.pretty {
 				return writeOutput(cmd, out, []byte(sdcreds.Armor(blob, sdcreds.ArmorWidth)))
 			}
@@ -394,6 +400,7 @@ func setupCmd() *cobra.Command {
 type s6Flags struct {
 	service, user, baseDir, source string
 	unshare                        bool
+	allowNull                      bool
 }
 
 func (f *s6Flags) register(cmd *cobra.Command, run bool) {
@@ -404,6 +411,7 @@ func (f *s6Flags) register(cmd *cobra.Command, run bool) {
 	if run {
 		fl.StringVar(&f.user, "user", "", "user that owns the credentials and runs the command")
 		fl.StringVar(&f.source, "source", "", "directory of encrypted credentials, one file each")
+		fl.BoolVar(&f.allowNull, "allow-null", false, "accept credentials sealed with the null key (no secrecy)")
 		fl.BoolVar(&f.unshare, "unshare", false, "give this process a private mount namespace")
 		_ = cmd.MarkFlagRequired("user")
 		_ = cmd.MarkFlagRequired("source")
@@ -434,8 +442,10 @@ func s6RunCmd() *cobra.Command {
 					if err != nil {
 						return nil, err
 					}
-					o := sdcreds.DecryptOptions{HostKey: hk, Name: &name, NullPolicy: sdcreds.SystemNullPolicy()}
-					o.EnvOverrides()
+					// No EnvOverrides here: a service's environment must not steer
+					// key material. A null or nameless credential is refused unless
+					// the operator passed --allow-null.
+					o := sdcreds.DecryptOptions{HostKey: hk, Name: &name, RequireName: true, AllowNull: f.allowNull}
 					pt, _, err := sdcreds.Decrypt(blob, o)
 					return pt, err
 				},

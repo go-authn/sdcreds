@@ -477,6 +477,32 @@ func TestDecryptRefusals(t *testing.T) {
 	if err := open(host, sdcreds.DecryptOptions{HostKey: staticKey, Name: str(""), Timestamp: ts}); !errors.Is(err, sdcreds.ErrNameMismatch) {
 		t.Errorf("empty expected name against a named credential: %v", err)
 	}
+	// RequireName: a nameless credential is refused, IgnoreName cannot waive it,
+	// and the expected name must be given.
+	nameless, err := sdcreds.Encrypt([]byte("hello"), sdcreds.EncryptOptions{Key: sdcreds.IDHost, HostKey: staticKey, Timestamp: 1000, NotAfter: 3000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := open(nameless, sdcreds.DecryptOptions{HostKey: staticKey, Name: str("foo"), Timestamp: ts}); err != nil {
+		t.Errorf("nameless credential without RequireName: %v", err)
+	}
+	for _, o := range []sdcreds.DecryptOptions{
+		{HostKey: staticKey, Name: str("foo"), Timestamp: ts, RequireName: true},
+		{HostKey: staticKey, Name: str("foo"), Timestamp: ts, RequireName: true, IgnoreName: true},
+	} {
+		if err := open(nameless, o); !errors.Is(err, sdcreds.ErrNameMismatch) {
+			t.Errorf("RequireName on a nameless credential: %v", err)
+		}
+	}
+	if err := open(host, sdcreds.DecryptOptions{HostKey: staticKey, Name: str("bar"), Timestamp: ts, RequireName: true, IgnoreName: true}); !errors.Is(err, sdcreds.ErrNameMismatch) {
+		t.Errorf("RequireName overrides IgnoreName: %v", err)
+	}
+	if err := open(host, sdcreds.DecryptOptions{HostKey: staticKey, Timestamp: ts, RequireName: true}); !errors.Is(err, sdcreds.ErrInvalid) {
+		t.Errorf("RequireName without Name: %v", err)
+	}
+	if err := open(host, sdcreds.DecryptOptions{HostKey: staticKey, Name: str("foo"), Timestamp: ts, RequireName: true}); err != nil {
+		t.Errorf("RequireName on a matching credential: %v", err)
+	}
 	// Not after: 2999 ok, 3000 ok (strictly less), 3001 expired.
 	for _, c := range []struct {
 		now  uint64
@@ -545,7 +571,9 @@ func TestDecryptNullPolicy(t *testing.T) {
 		o    sdcreds.DecryptOptions
 		want error
 	}{
-		{"default accepts", sdcreds.DecryptOptions{Timestamp: 2000}, nil},
+		{"default refuses", sdcreds.DecryptOptions{Timestamp: 2000}, sdcreds.ErrNullRefused},
+		{"allow accepts", sdcreds.DecryptOptions{Timestamp: 2000, AllowNull: true}, nil},
+		{"policy accepts", sdcreds.DecryptOptions{Timestamp: 2000, NullPolicy: func() error { return nil }}, nil},
 		{"policy refuses", sdcreds.DecryptOptions{Timestamp: 2000, NullPolicy: refuse}, sdcreds.ErrNullRefused},
 		{"allow overrides policy", sdcreds.DecryptOptions{Timestamp: 2000, NullPolicy: refuse, AllowNull: true}, nil},
 		{"refuse wins", sdcreds.DecryptOptions{Timestamp: 2000, RefuseNull: true}, sdcreds.ErrNullRefused},

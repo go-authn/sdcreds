@@ -217,10 +217,15 @@ type DecryptOptions struct {
 	Scope    *Scope
 	AnyScope bool
 	// AllowNull accepts a null-key credential outright; RefuseNull refuses it;
-	// otherwise NullPolicy decides (nil accepts, see SystemNullPolicy).
+	// otherwise NullPolicy decides (see SystemNullPolicy). With none of the
+	// three set the null key is refused: anyone can seal with it.
 	AllowNull  bool
 	RefuseNull bool
 	NullPolicy func() error
+	// RequireName makes the embedded name mandatory: a credential without one
+	// is refused instead of passing any name check. It needs Name, and it
+	// overrides IgnoreName.
+	RequireName bool
 	// IgnoreName and IgnoreNotAfter are the effect of
 	// SYSTEMD_CREDENTIAL_VALIDATE_NAME=0 and _NOT_AFTER=0 (cu.c:1678, 1694);
 	// see EnvOverrides.
@@ -236,6 +241,9 @@ func Decrypt(blob []byte, o DecryptOptions) ([]byte, Metadata, error) {
 	if uint64(len(blob)) > EncryptedMax {
 		return nil, md, ErrTooLarge
 	}
+	if o.RequireName && o.Name == nil {
+		return nil, md, fmt.Errorf("%w: RequireName needs the expected Name", ErrInvalid)
+	}
 	id, err := classify(blob)
 	if err != nil {
 		return nil, md, err
@@ -249,6 +257,10 @@ func Decrypt(blob []byte, o DecryptOptions) ([]byte, Metadata, error) {
 			if err := o.NullPolicy(); err != nil {
 				return nil, md, err
 			}
+		default:
+			// The null key is a public constant: a credential sealed with it
+			// proves nothing, so it is accepted only when the caller says so.
+			return nil, md, fmt.Errorf("%w: credential uses the null key, which needs AllowNull or a NullPolicy", ErrNullRefused)
 		}
 	}
 	if id.Scoped() {
@@ -295,13 +307,16 @@ func Decrypt(blob []byte, o DecryptOptions) ([]byte, Metadata, error) {
 	if uint64(len(pt)) < hs {
 		return fail(fmt.Errorf("%w: metadata header incomplete", ErrFormat))
 	}
+	if nameSize == 0 && o.RequireName {
+		return fail(fmt.Errorf("%w: credential carries no name, expected %q", ErrNameMismatch, *o.Name))
+	}
 	if nameSize > 0 {
 		name := string(pt[20 : 20+nameSize])
 		if strings.IndexByte(name, 0) >= 0 || !NameValid(name) {
 			return fail(fmt.Errorf("%w: embedded credential name is not valid", ErrFormat))
 		}
 		md.Name = name
-		if o.Name != nil && name != *o.Name && !o.IgnoreName {
+		if o.Name != nil && name != *o.Name && (!o.IgnoreName || o.RequireName) {
 			return fail(fmt.Errorf("%w: embedded name %q, expected %q", ErrNameMismatch, name, *o.Name))
 		}
 	}
