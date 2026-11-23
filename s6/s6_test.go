@@ -269,6 +269,21 @@ func TestRunLeavesNothingBehind(t *testing.T) {
 	}
 }
 
+// No staging directory, nothing mounted, nothing started.
+func TestRunWithoutAStagingDirectory(t *testing.T) {
+	boom := errors.New("boom")
+	old := mkdirTemp
+	defer func() { mkdirTemp = old }()
+	mkdirTemp = func(string, string) (string, error) { return "", boom }
+	r, c := newRig(t), config(t)
+	if err := Run(c, r.ops()); !errors.Is(err, boom) {
+		t.Fatalf("%v", err)
+	}
+	if slices.Contains(r.calls, "mount") || slices.Contains(r.calls, "exec") {
+		t.Errorf("%v", r.calls)
+	}
+}
+
 // Credentials are decrypted before anything is mounted: a bad one leaves the
 // system untouched.
 func TestRunDecryptsBeforeMounting(t *testing.T) {

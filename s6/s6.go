@@ -226,9 +226,10 @@ func readBounded(r io.Reader) ([]byte, error) {
 // Seams for the tests: failures of these calls cannot be provoked on a real
 // descriptor or inside a fresh private directory.
 var (
-	statFile = func(f *os.File) (os.FileInfo, error) { return f.Stat() }
-	mkdir    = os.Mkdir
-	chmod    = os.Chmod
+	statFile  = func(f *os.File) (os.FileInfo, error) { return f.Stat() }
+	mkdir     = os.Mkdir
+	chmod     = os.Chmod
+	mkdirTemp = os.MkdirTemp
 )
 
 // create makes a new file that must not exist; a variable for the tests.
@@ -318,7 +319,7 @@ func Run(c Config, ops Ops) (err error) {
 	// The credentials are written and frozen in a staging mount that sits under
 	// a directory only root can enter, then moved to dir: until then no process
 	// of the service user can reach them, let alone change them.
-	stageRoot, err := os.MkdirTemp(c.BaseDir, ".stage-")
+	stageRoot, err := mkdirTemp(c.BaseDir, ".stage-")
 	if err != nil {
 		return err
 	}

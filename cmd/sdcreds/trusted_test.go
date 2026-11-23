@@ -11,7 +11,54 @@ import (
 
 	"github.com/go-authn/sdcreds"
 	"github.com/go-authn/sdcreds/s6"
+	"golang.org/x/sys/unix"
 )
+
+// A directory that cannot be read, or that goes away, while the path is
+// walked is a refusal; so is a parent directory that does not exist.
+func TestOpenTrustedWalkFailures(t *testing.T) {
+	asOwner(t, uint32(os.Getuid()))
+	dir := filepath.Join(ancestorsFrom, "walk")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "key")
+	if err := os.WriteFile(file, []byte("k"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	boom := errors.New("boom")
+	oldOpenat, oldFstat := openat, fstat
+	defer func() { openat, fstat = oldOpenat, oldFstat }()
+
+	_, err := openTrusted(filepath.Join(dir, "nodir", "key"))
+	var pe *os.PathError
+	if !errors.As(err, &pe) || pe.Op != "lstat" {
+		t.Errorf("a missing parent: %v", err)
+	}
+	openat = func(fd int, p string, flags int, mode uint32) (int, error) {
+		if p == "/" {
+			return -1, boom
+		}
+		return oldOpenat(fd, p, flags, mode)
+	}
+	if _, err := openTrusted(file); !errors.Is(err, boom) {
+		t.Errorf("no root: %v", err)
+	}
+	openat = func(fd int, p string, flags int, mode uint32) (int, error) {
+		if p == "walk" {
+			return -1, boom
+		}
+		return oldOpenat(fd, p, flags, mode)
+	}
+	if _, err := openTrusted(file); !errors.Is(err, boom) {
+		t.Errorf("a directory that went away: %v", err)
+	}
+	openat = oldOpenat
+	fstat = func(int, *unix.Stat_t) error { return boom }
+	if _, err := openTrusted(file); !errors.Is(err, boom) {
+		t.Errorf("a directory that cannot be examined: %v", err)
+	}
+}
 
 // hostSealed prepares a credential "db" sealed with the host key of the files
 // that env(t) points at, and returns the source directory, the base directory,

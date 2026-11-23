@@ -65,6 +65,13 @@ func openTrusted(path string) (*os.File, error) {
 // judged, "/" in production; a variable for the tests, which do not run as root.
 var ancestorsFrom = "/"
 
+// Seams for the tests: a system call that cannot be made to fail on a real
+// system.
+var (
+	openat = unix.Openat
+	fstat  = unix.Fstat
+)
+
 // walkTrustedDirs opens the directory that holds path one component at a time,
 // from "/", without following a symbolic link, and judges every directory it
 // crosses: the owner is trustedUID and neither group nor others can write. A
@@ -73,14 +80,14 @@ var ancestorsFrom = "/"
 // descriptor of dir.
 func walkTrustedDirs(dir string) (int, error) {
 	const flags = unix.O_RDONLY | unix.O_DIRECTORY | unix.O_NOFOLLOW | unix.O_CLOEXEC
-	fd, err := unix.Open("/", flags, 0)
+	fd, err := openat(unix.AT_FDCWD, "/", flags, 0)
 	if err != nil {
 		return -1, err
 	}
 	cur := "/"
 	for _, comp := range append([]string{""}, strings.Split(strings.Trim(dir, "/"), "/")...) {
 		if comp != "" {
-			next, err := unix.Openat(fd, comp, flags, 0)
+			next, err := openat(fd, comp, flags, 0)
 			unix.Close(fd)
 			if err != nil {
 				return -1, &os.PathError{Op: "open", Path: filepath.Join(cur, comp), Err: err}
@@ -89,7 +96,7 @@ func walkTrustedDirs(dir string) (int, error) {
 		}
 		if cur == ancestorsFrom || strings.HasPrefix(cur, strings.TrimSuffix(ancestorsFrom, "/")+"/") {
 			var st unix.Stat_t
-			if err := unix.Fstat(fd, &st); err != nil {
+			if err := fstat(fd, &st); err != nil {
 				unix.Close(fd)
 				return -1, err
 			}
