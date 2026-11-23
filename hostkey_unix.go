@@ -16,7 +16,9 @@ import (
 var (
 	// openSecret opens without following a final symlink (cu.c:577).
 	openSecret = func(path string) (*os.File, error) {
-		fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW|syscall.O_NOCTTY, 0)
+		// O_NONBLOCK: opening a FIFO there must fail the type check below, not
+		// wait for a writer forever; a regular file ignores it.
+		fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW|syscall.O_NOCTTY|syscall.O_NONBLOCK, 0)
 		if err != nil {
 			return nil, &os.PathError{Op: "open", Path: path, Err: err}
 		}
@@ -24,7 +26,12 @@ var (
 	}
 	readFull = io.ReadFull
 	syncFile = func(f *os.File) error { return f.Sync() }
+	geteuid  = os.Geteuid
 )
+
+// ownerTrusted says whether a host secret owned by uid may be used by a process
+// running as euid: its owner is root or the user running it, nobody else.
+func ownerTrusted(uid uint32, euid int) bool { return uid == 0 || int64(uid) == int64(euid) }
 
 // readHostSecret returns the whole file (machine id prefix included).
 func readHostSecret(path string) ([]byte, error) {
@@ -39,13 +46,17 @@ func readHostSecret(path string) ([]byte, error) {
 		return nil, err
 	}
 	var links uint64 = 1
+	trusted := true
 	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
 		links = uint64(st.Nlink)
+		trusted = ownerTrusted(st.Uid, geteuid())
 	}
 	size := fi.Size()
 	switch {
 	case !fi.Mode().IsRegular():
 		return nil, fmt.Errorf("sdcreds: %s is not a regular file", path)
+	case !trusted:
+		return nil, fmt.Errorf("sdcreds: %s is owned by neither root nor the current user, refusing", path)
 	case links == 0:
 		return nil, fmt.Errorf("sdcreds: %s was deleted", path)
 	case links > 1:
