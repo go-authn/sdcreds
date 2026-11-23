@@ -110,11 +110,9 @@ table here.
   1.4 MiB blobs, too large to commit). The 1 MiB boundary is covered by the
   library tests (`TestEncryptedMaxBoundary` and the bound tests in `lib_test.go`)
   only, not by interop vectors.
-* `mutsweep` leaves two guards that no test can tell apart from the code under
-  them: `cmd/sdcreds/main.go` `HostSecretPath` error in `setup` (the next call
-  re-reads the same variable and fails identically) and the `WriteFile` error for
-  the payload in `internal/perf`. `s6/ops_linux.go` is swept only on Linux and is
-  covered by the root integration test.
+* `mutsweep` catches every guard of `s6`, `cmd/sdcreds` and `internal/perf` by an
+  assertion. `s6/ops_linux.go` is excluded from a macOS sweep (build tags) and is
+  covered by the root integration test in the interop image.
 
 ## Licence
 

@@ -86,6 +86,21 @@ func TestSetupReportsAFailedCreation(t *testing.T) {
 	}
 }
 
+func TestSetupNamesTheResolvedPath(t *testing.T) {
+	needHostFiles(t)
+	dir := env(t)
+	want := filepath.Join(dir, "secret", "credential.secret")
+	for _, verb := range []string{"created", "exists"} {
+		if out := mustRun(t, "", "setup"); out != "host secret "+want+" "+verb+"\n" {
+			t.Errorf("%s: %q", verb, out)
+		}
+	}
+	explicit := filepath.Join(dir, "other")
+	if out := mustRun(t, "", "setup", "--path", explicit); out != "host secret "+explicit+" created\n" {
+		t.Errorf("%q", out)
+	}
+}
+
 func TestGarbageIsNamedAsBase64(t *testing.T) {
 	dir := env(t)
 	if _, _, err := run(t, "!!not base64!!", "decrypt"); err == nil || !strings.Contains(err.Error(), "base64") {

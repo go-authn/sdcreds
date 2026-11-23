@@ -363,18 +363,16 @@ func setupCmd() *cobra.Command {
 		Short: "create the host secret if it does not exist",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if path == "" {
-				p, err := sdcreds.HostSecretPath()
-				if err != nil {
-					return err
-				}
-				path = p
-			}
 			mid, err := sdcreds.ReadMachineID(machineIDPath())
 			if err != nil {
 				return err
 			}
+			// An empty path is resolved by HostKey itself, which refuses a bad
+			// $SYSTEMD_CREDENTIAL_SECRET; the lookup below cannot fail after it.
 			_, err = sdcreds.HostKeyFile{Path: path, MachineID: mid}.HostKey()
+			if path == "" && (err == nil || errors.Is(err, os.ErrNotExist)) {
+				path, _ = sdcreds.HostSecretPath()
+			}
 			switch {
 			case err == nil:
 				fmt.Fprintf(cmd.OutOrStdout(), "host secret %s exists\n", path)

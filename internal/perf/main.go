@@ -29,6 +29,9 @@ func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 // loadFile is where the 1-minute load average is read from.
 var loadFile = "/proc/loadavg"
 
+// writeFile is replaced by the tests.
+var writeFile = os.WriteFile
+
 // load returns the 1-minute load average.
 func load() (float64, error) {
 	b, err := os.ReadFile(loadFile)
@@ -137,7 +140,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	for r := 0; r < *rounds; r++ {
 		for _, n := range sz {
 			plain := filepath.Join(dir, "plain")
-			if err := os.WriteFile(plain, bytes.Repeat([]byte{byte(n)}, n), 0o600); err != nil {
+			if err := writeFile(plain, bytes.Repeat([]byte{byte(n)}, n), 0o600); err != nil {
 				return fail(err)
 			}
 			// The order alternates, so neither tool always runs second.

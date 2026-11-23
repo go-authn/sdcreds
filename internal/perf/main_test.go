@@ -133,6 +133,16 @@ func TestRunNamesTheFailingOperation(t *testing.T) {
 	}
 }
 
+func TestRunReportsAPayloadThatCannotBeWritten(t *testing.T) {
+	good := fakeTool(t, `eval "in=\${$(($#-1))}"; eval "out=\${$#}"; cp "$in" "$out"`+"\n")
+	defer func(o func(string, []byte, os.FileMode) error) { writeFile = o }(writeFile)
+	writeFile = func(string, []byte, os.FileMode) error { return errors.New("no space left") }
+	var out, errb bytes.Buffer
+	if rc := run([]string{"-ours", good, "-theirs", good, "-rounds", "1", "-sizes", "1", "-max-load", "-1"}, &out, &errb); rc != 1 || !strings.Contains(errb.String(), "no space left") {
+		t.Errorf("rc %d: %s", rc, errb.String())
+	}
+}
+
 func TestRunRefusals(t *testing.T) {
 	good := fakeTool(t, `eval "in=\${$(($#-1))}"; eval "out=\${$#}"; cp "$in" "$out"`+"\n")
 	bad := fakeTool(t, "exit 3\n")
