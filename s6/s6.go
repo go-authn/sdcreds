@@ -172,7 +172,7 @@ func readLimited(path string) ([]byte, error) {
 		return nil, fmt.Errorf("s6: %s: %w", path, err)
 	}
 	defer f.Close()
-	st, err := f.Stat()
+	st, err := statFile(f)
 	if err != nil {
 		return nil, err
 	}
@@ -200,6 +200,14 @@ func readBounded(r io.Reader) ([]byte, error) {
 	}
 	return b, nil
 }
+
+// Seams for the tests: failures of these calls cannot be provoked on a real
+// descriptor or inside a fresh private directory.
+var (
+	statFile = func(f *os.File) (os.FileInfo, error) { return f.Stat() }
+	mkdir    = os.Mkdir
+	chmod    = os.Chmod
+)
 
 // create makes a new file that must not exist; a variable for the tests.
 var create = func(path string) (io.WriteCloser, error) {
@@ -246,17 +254,15 @@ func Run(c Config, ops Ops) (err error) {
 	dir := Dir(c.BaseDir, c.Service)
 	// The base directory is shared by every service and must stay traversable;
 	// only the directory of this service is private.
-	if err := os.MkdirAll(c.BaseDir, 0o755); err != nil {
-		return err
-	}
+	// A failure is judged by checkBase, which needs the directory to exist.
+	_ = os.MkdirAll(c.BaseDir, 0o755)
 	// Whoever can write to the base directory can swap what is mounted or
 	// unmounted under it.
 	if err := checkBase(c.BaseDir); err != nil {
 		return err
 	}
-	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
-		return err
-	}
+	// An existing directory is fine; requireDir judges whatever is there.
+	_ = os.Mkdir(dir, 0o700)
 	if err := requireDir(dir); err != nil {
 		return err
 	}
@@ -302,14 +308,14 @@ func Run(c Config, ops Ops) (err error) {
 			err = fmt.Errorf("%w; %w", err, left)
 		}
 	}()
-	if err := os.Mkdir(stage, 0o700); err != nil {
+	if err := mkdir(stage, 0o700); err != nil {
 		return err
 	}
 	if err := ops.MountRAM(stage); err != nil {
 		return fmt.Errorf("s6: mount: %w", err)
 	}
 	staged = true
-	if err := os.Chmod(stage, 0o700); err != nil {
+	if err := chmod(stage, 0o700); err != nil {
 		return err
 	}
 	for _, e := range creds {
@@ -331,7 +337,7 @@ func Run(c Config, ops Ops) (err error) {
 		return err
 	}
 	// Nothing writes into it any more: owner may read and enter, no more.
-	if err := os.Chmod(stage, 0o500); err != nil {
+	if err := chmod(stage, 0o500); err != nil {
 		return err
 	}
 	if err := ops.RemountRO(stage); err != nil {

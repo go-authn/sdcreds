@@ -163,6 +163,43 @@ func TestSetupFailuresAreNotIgnored(t *testing.T) {
 	})
 }
 
+func TestSeamFailuresAreNotIgnored(t *testing.T) {
+	boom := errors.New("injected")
+	defer func(a func(*os.File) (os.FileInfo, error), b, c func(string, os.FileMode) error) {
+		statFile, mkdir, chmod = a, b, c
+	}(statFile, mkdir, chmod)
+
+	p := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	statFile = func(*os.File) (os.FileInfo, error) { return nil, boom }
+	if err := safely(func() error { _, err := readLimited(p); return err }); !errors.Is(err, boom) {
+		t.Errorf("stat failure ignored: %v", err)
+	}
+	statFile = func(f *os.File) (os.FileInfo, error) { return f.Stat() }
+
+	mkdir = func(string, os.FileMode) error { return boom }
+	r, c := newRig(t), config(t)
+	if err := refused(t, r, c, r.ops()); !errors.Is(err, boom) {
+		t.Errorf("mkdir stage: %v", err)
+	}
+	mkdir = os.Mkdir
+
+	for _, mode := range []os.FileMode{0o700, 0o500} {
+		chmod = func(path string, m os.FileMode) error {
+			if m == mode {
+				return boom
+			}
+			return os.Chmod(path, m)
+		}
+		r, c := newRig(t), config(t)
+		if err := refused(t, r, c, r.ops()); !errors.Is(err, boom) {
+			t.Errorf("chmod %o: %v", mode, err)
+		}
+	}
+}
+
 type badFile struct{ werr, cerr error }
 
 func (b badFile) Write(p []byte) (int, error) {

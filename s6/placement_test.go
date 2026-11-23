@@ -274,8 +274,8 @@ func TestUnusableBaseDirectoryStopsTheStart(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r, c := newRig(t), config(t)
 			mk(&c)
-			err := Run(c, r.ops())
-			if err == nil || errors.Is(err, errExec) || slices.Contains(r.calls, "mount") {
+			err := noPanic(func() error { return Run(c, r.ops()) })
+			if err == nil || errors.Is(err, errExec) || strings.HasPrefix(err.Error(), "panic") || slices.Contains(r.calls, "mount") {
 				t.Fatalf("%v %v", err, r.calls)
 			}
 		})
@@ -285,11 +285,11 @@ func TestUnusableBaseDirectoryStopsTheStart(t *testing.T) {
 // A path that cannot be examined is an error, not an accepted directory.
 func TestMissingBaseAndServiceDirectoriesAreErrors(t *testing.T) {
 	gone := filepath.Join(t.TempDir(), "gone")
-	if err := noPanic(func() error { return requireDir(gone) }); err == nil {
-		t.Error("requireDir accepted a missing path")
+	if err := noPanic(func() error { return requireDir(gone) }); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("requireDir on a missing path: %v", err)
 	}
-	if err := noPanic(func() error { return checkBase(gone) }); err == nil {
-		t.Error("checkBase accepted a missing path")
+	if err := noPanic(func() error { return checkBase(gone) }); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("checkBase on a missing path: %v", err)
 	}
 }
 
