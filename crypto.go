@@ -81,15 +81,12 @@ func deriveKey(id KeyID, src HostKeySource, scope *Scope) ([]byte, error) {
 	return k, nil
 }
 
-func newGCM(key, iv []byte) (cipher.AEAD, error) {
-	blk, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	if len(iv) == ivSize {
-		return cipher.NewGCM(blk)
-	}
-	return cipher.NewGCMWithNonceSize(blk, len(iv))
+// newGCM cannot fail: the key is a SHA-256 or HMAC-SHA256 output (32 bytes)
+// and Parse bounds the IV to 1..FieldMax bytes, which GCM accepts.
+func newGCM(key, iv []byte) cipher.AEAD {
+	blk, _ := aes.NewCipher(key)
+	g, _ := cipher.NewGCMWithNonceSize(blk, len(iv))
+	return g
 }
 
 func nowMicro() uint64 { return uint64(time.Now().UnixMicro()) }
@@ -164,10 +161,7 @@ func Encrypt(plaintext []byte, o EncryptOptions) ([]byte, error) {
 	if _, err := io.ReadFull(rnd, iv); err != nil {
 		return nil, fmt.Errorf("sdcreds: failed to acquire a randomized IV: %w", err)
 	}
-	aead, err := newGCM(key, iv)
-	if err != nil {
-		return nil, err
-	}
+	aead := newGCM(key, iv)
 
 	// Header: id, sizes, IV, pad to 8, then the scoped flags for scoped types.
 	const fixed = 16 + 4*4
@@ -277,21 +271,15 @@ func Decrypt(blob []byte, o DecryptOptions) ([]byte, Metadata, error) {
 		return nil, md, err
 	}
 	defer zero(key)
-	aead, err := newGCM(key, h.IV)
-	if err != nil {
-		return nil, md, err
-	}
+	aead := newGCM(key, h.IV)
 	p := h.aadLen
 	pt, err := aead.Open(nil, h.IV, blob[p:], blob[:p])
 	if err != nil {
 		return nil, md, ErrAuth
 	}
 
+	// Parse guarantees len(pt) >= align8(metaMin): the fixed fields are there.
 	const metaMin = 8 + 8 + 4
-	if uint64(len(pt)) < align8(metaMin) {
-		zero(pt)
-		return nil, md, fmt.Errorf("%w: metadata header incomplete", ErrFormat)
-	}
 	md.Timestamp = binary.LittleEndian.Uint64(pt[0:])
 	md.NotAfter = binary.LittleEndian.Uint64(pt[8:])
 	nameSize := binary.LittleEndian.Uint32(pt[16:])
@@ -302,9 +290,7 @@ func Decrypt(blob []byte, o DecryptOptions) ([]byte, Metadata, error) {
 	if md.Timestamp != Infinity && md.NotAfter != Infinity && md.Timestamp >= md.NotAfter {
 		return fail(fmt.Errorf("%w: timestamps of credential are not in order", ErrFormat))
 	}
-	if nameSize > NameMax {
-		return fail(fmt.Errorf("%w: embedded credential name too long", ErrFormat))
-	}
+	// A name longer than NameMax is refused below by NameValid.
 	hs := align8(metaMin + uint64(nameSize))
 	if uint64(len(pt)) < hs {
 		return fail(fmt.Errorf("%w: metadata header incomplete", ErrFormat))

@@ -4,6 +4,7 @@ package sdcreds
 
 import (
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,40 +12,57 @@ import (
 	"syscall"
 )
 
+// Seams for the tests: failures of the kernel that a test cannot provoke.
+var (
+	// openSecret opens without following a final symlink (cu.c:577).
+	openSecret = func(path string) (*os.File, error) {
+		fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW|syscall.O_NOCTTY, 0)
+		if err != nil {
+			return nil, &os.PathError{Op: "open", Path: path, Err: err}
+		}
+		return os.NewFile(uintptr(fd), path), nil
+	}
+	readFull = io.ReadFull
+	syncFile = func(f *os.File) error { return f.Sync() }
+)
+
 // readHostSecret returns the whole file (machine id prefix included).
 func readHostSecret(path string) ([]byte, error) {
-	// O_NOFOLLOW: a symlink as the last component is refused (cu.c:577).
-	fd, err := syscall.Open(path, syscall.O_RDONLY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW|syscall.O_NOCTTY, 0)
+	f, err := openSecret(path)
 	if err != nil {
-		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+		return nil, err
 	}
-	f := os.NewFile(uintptr(fd), path)
 	defer f.Close()
 
-	var st syscall.Stat_t
-	if err := syscall.Fstat(fd, &st); err != nil {
-		return nil, &os.PathError{Op: "stat", Path: path, Err: err}
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
 	}
+	var links uint64 = 1
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+		links = uint64(st.Nlink)
+	}
+	size := fi.Size()
 	switch {
-	case st.Mode&syscall.S_IFMT != syscall.S_IFREG:
+	case !fi.Mode().IsRegular():
 		return nil, fmt.Errorf("sdcreds: %s is not a regular file", path)
-	case st.Nlink == 0:
+	case links == 0:
 		return nil, fmt.Errorf("sdcreds: %s was deleted", path)
-	case st.Nlink > 1:
+	case links > 1:
 		return nil, fmt.Errorf("sdcreds: %s has too many links, refusing", path)
-	case st.Mode&07777 != 0400:
+	case fi.Mode() != 0o400: // permission bits and setuid/setgid/sticky alike
 		return nil, fmt.Errorf("sdcreds: %s has permissive access mode, refusing (want 0400)", path)
-	case st.Size < 16+1:
+	case size < 16+1:
 		return nil, fmt.Errorf("sdcreds: %s is too small, refusing", path)
-	case st.Size > HostSecretMax:
+	case size > HostSecretMax:
 		return nil, fmt.Errorf("sdcreds: %s is too big, refusing: %w", path, ErrTooLarge)
 	}
-	buf := make([]byte, st.Size+1)
-	n, err := io.ReadFull(f, buf)
+	buf := make([]byte, size+1)
+	n, err := readFull(f, buf)
 	if err != nil && err != io.ErrUnexpectedEOF {
 		return nil, &os.PathError{Op: "read", Path: path, Err: err}
 	}
-	if int64(n) != st.Size { // the size changed under us (cu.c:629)
+	if int64(n) != size { // the size changed under us (cu.c:629)
 		return nil, fmt.Errorf("sdcreds: failed to read %s: size changed", path)
 	}
 	return buf[:n], nil
@@ -52,9 +70,8 @@ func readHostSecret(path string) ([]byte, error) {
 
 func createHostSecret(path string, machineID [16]byte) ([]byte, error) {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, err
-	}
+	// A failure to create the directory surfaces as the error of the open below.
+	_ = os.MkdirAll(dir, 0o755)
 	tmp, err := os.OpenFile(filepath.Join(dir, fmt.Sprintf(".sdcreds-%d.tmp", os.Getpid())), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return nil, err
@@ -64,16 +81,9 @@ func createHostSecret(path string, machineID [16]byte) ([]byte, error) {
 
 	prefix := HostSecretMachineID(machineID)
 	data := make([]byte, HostSecretDataSize)
-	if _, err := rand.Read(data); err != nil {
-		return nil, err
-	}
-	if _, err := tmp.Write(append(append([]byte{}, prefix[:]...), data...)); err != nil {
-		return nil, err
-	}
-	if err := tmp.Chmod(0o400); err != nil {
-		return nil, err
-	}
-	if err := tmp.Sync(); err != nil {
+	rand.Read(data) // never fails since Go 1.24
+	_, werr := tmp.Write(append(append([]byte{}, prefix[:]...), data...))
+	if err := errors.Join(werr, tmp.Chmod(0o400), syncFile(tmp)); err != nil {
 		return nil, err
 	}
 	// link(2) refuses to replace an existing file, like link_tmpfile_at.

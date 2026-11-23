@@ -1,0 +1,2042 @@
+{
+  "systemd": "262.2",
+  "machine_id": "0123456789abcdef0123456789abcdef",
+  "user": "sdcreds-test",
+  "uid": 1000,
+  "timestamp": 1700000000,
+  "vectors": [
+    {
+      "file": "null.name-none.na-inf.empty.cred",
+      "mode": "null",
+      "name": "",
+      "not_after": 0,
+      "payload": "empty",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "null.name-none.na-inf.one.cred",
+      "mode": "null",
+      "name": "",
+      "not_after": 0,
+      "payload": "one",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "null.name-none.na-past.empty.cred",
+      "mode": "null",
+      "name": "",
+      "not_after": 1700000100,
+      "payload": "empty",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "expired"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "expired"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "null.name-none.na-past.one.cred",
+      "mode": "null",
+      "name": "",
+      "not_after": 1700000100,
+      "payload": "one",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "expired"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "expired"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "null.name-none.na-future.empty.cred",
+      "mode": "null",
+      "name": "",
+      "not_after": 4102444800,
+      "payload": "empty",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "null.name-none.na-future.one.cred",
+      "mode": "null",
+      "name": "",
+      "not_after": 4102444800,
+      "payload": "one",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "null.name-foo.na-inf.empty.cred",
+      "mode": "null",
+      "name": "foo",
+      "not_after": 0,
+      "payload": "empty",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "null.name-foo.na-inf.one.cred",
+      "mode": "null",
+      "name": "foo",
+      "not_after": 0,
+      "payload": "one",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "null.name-foo.na-inf.k64.cred",
+      "mode": "null",
+      "name": "foo",
+      "not_after": 0,
+      "payload": "k64",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "null.name-foo.na-past.empty.cred",
+      "mode": "null",
+      "name": "foo",
+      "not_after": 1700000100,
+      "payload": "empty",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "expired"
+        },
+        {
+          "name": "foo",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "expired"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "null.name-foo.na-past.one.cred",
+      "mode": "null",
+      "name": "foo",
+      "not_after": 1700000100,
+      "payload": "one",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "expired"
+        },
+        {
+          "name": "foo",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "expired"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "null.name-foo.na-future.empty.cred",
+      "mode": "null",
+      "name": "foo",
+      "not_after": 4102444800,
+      "payload": "empty",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "null.name-foo.na-future.one.cred",
+      "mode": "null",
+      "name": "foo",
+      "not_after": 4102444800,
+      "payload": "one",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host.name-none.na-inf.empty.cred",
+      "mode": "host",
+      "name": "",
+      "not_after": 0,
+      "payload": "empty",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host.name-none.na-inf.one.cred",
+      "mode": "host",
+      "name": "",
+      "not_after": 0,
+      "payload": "one",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host.name-none.na-past.empty.cred",
+      "mode": "host",
+      "name": "",
+      "not_after": 1700000100,
+      "payload": "empty",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "expired"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "expired"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host.name-none.na-past.one.cred",
+      "mode": "host",
+      "name": "",
+      "not_after": 1700000100,
+      "payload": "one",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "expired"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "expired"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host.name-none.na-future.empty.cred",
+      "mode": "host",
+      "name": "",
+      "not_after": 4102444800,
+      "payload": "empty",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host.name-none.na-future.one.cred",
+      "mode": "host",
+      "name": "",
+      "not_after": 4102444800,
+      "payload": "one",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host.name-foo.na-inf.empty.cred",
+      "mode": "host",
+      "name": "foo",
+      "not_after": 0,
+      "payload": "empty",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host.name-foo.na-inf.one.cred",
+      "mode": "host",
+      "name": "foo",
+      "not_after": 0,
+      "payload": "one",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host.name-foo.na-inf.k64.cred",
+      "mode": "host",
+      "name": "foo",
+      "not_after": 0,
+      "payload": "k64",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host.name-foo.na-past.empty.cred",
+      "mode": "host",
+      "name": "foo",
+      "not_after": 1700000100,
+      "payload": "empty",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "expired"
+        },
+        {
+          "name": "foo",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "expired"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host.name-foo.na-past.one.cred",
+      "mode": "host",
+      "name": "foo",
+      "not_after": 1700000100,
+      "payload": "one",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "expired"
+        },
+        {
+          "name": "foo",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "expired"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host.name-foo.na-future.empty.cred",
+      "mode": "host",
+      "name": "foo",
+      "not_after": 4102444800,
+      "payload": "empty",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host.name-foo.na-future.one.cred",
+      "mode": "host",
+      "name": "foo",
+      "not_after": 4102444800,
+      "payload": "one",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host-scoped.name-none.na-inf.empty.cred",
+      "mode": "host-scoped",
+      "name": "",
+      "not_after": 0,
+      "payload": "empty",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host-scoped.name-none.na-inf.one.cred",
+      "mode": "host-scoped",
+      "name": "",
+      "not_after": 0,
+      "payload": "one",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host-scoped.name-none.na-past.empty.cred",
+      "mode": "host-scoped",
+      "name": "",
+      "not_after": 1700000100,
+      "payload": "empty",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "expired"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "expired"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host-scoped.name-none.na-past.one.cred",
+      "mode": "host-scoped",
+      "name": "",
+      "not_after": 1700000100,
+      "payload": "one",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "expired"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "expired"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host-scoped.name-none.na-future.empty.cred",
+      "mode": "host-scoped",
+      "name": "",
+      "not_after": 4102444800,
+      "payload": "empty",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host-scoped.name-none.na-future.one.cred",
+      "mode": "host-scoped",
+      "name": "",
+      "not_after": 4102444800,
+      "payload": "one",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host-scoped.name-foo.na-inf.empty.cred",
+      "mode": "host-scoped",
+      "name": "foo",
+      "not_after": 0,
+      "payload": "empty",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host-scoped.name-foo.na-inf.one.cred",
+      "mode": "host-scoped",
+      "name": "foo",
+      "not_after": 0,
+      "payload": "one",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host-scoped.name-foo.na-inf.k64.cred",
+      "mode": "host-scoped",
+      "name": "foo",
+      "not_after": 0,
+      "payload": "k64",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host-scoped.name-foo.na-past.empty.cred",
+      "mode": "host-scoped",
+      "name": "foo",
+      "not_after": 1700000100,
+      "payload": "empty",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "expired"
+        },
+        {
+          "name": "foo",
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "expired"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host-scoped.name-foo.na-past.one.cred",
+      "mode": "host-scoped",
+      "name": "foo",
+      "not_after": 1700000100,
+      "payload": "one",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "expired"
+        },
+        {
+          "name": "foo",
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "expired"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host-scoped.name-foo.na-future.empty.cred",
+      "mode": "host-scoped",
+      "name": "foo",
+      "not_after": 4102444800,
+      "payload": "empty",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host-scoped.name-foo.na-future.one.cred",
+      "mode": "host-scoped",
+      "name": "foo",
+      "not_after": 4102444800,
+      "payload": "one",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "foo",
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "ok"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": true,
+          "expect": "name-mismatch"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host.name-foo.na-inf.one.flip-iv.cred",
+      "mode": "host",
+      "name": "foo",
+      "not_after": 0,
+      "payload": "one",
+      "tamper": "flip-iv",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "auth"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "auth"
+        },
+        {
+          "name": "foo",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "auth"
+        },
+        {
+          "name": "foo",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "auth"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "auth"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "auth"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host.name-foo.na-inf.one.flip-ciphertext.cred",
+      "mode": "host",
+      "name": "foo",
+      "not_after": 0,
+      "payload": "one",
+      "tamper": "flip-ciphertext",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "auth"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "auth"
+        },
+        {
+          "name": "foo",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "auth"
+        },
+        {
+          "name": "foo",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "auth"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "auth"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "auth"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host.name-foo.na-inf.one.flip-tag.cred",
+      "mode": "host",
+      "name": "foo",
+      "not_after": 0,
+      "payload": "one",
+      "tamper": "flip-tag",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "auth"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "auth"
+        },
+        {
+          "name": "foo",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "auth"
+        },
+        {
+          "name": "foo",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "auth"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "auth"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "auth"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host.name-foo.na-inf.one.truncate-tag.cred",
+      "mode": "host",
+      "name": "foo",
+      "not_after": 0,
+      "payload": "one",
+      "tamper": "truncate-tag",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "auth"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "auth"
+        },
+        {
+          "name": "foo",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "auth"
+        },
+        {
+          "name": "foo",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "auth"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "auth"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "auth"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    },
+    {
+      "file": "host.name-foo.na-inf.one.truncate-header.cred",
+      "mode": "host",
+      "name": "foo",
+      "not_after": 0,
+      "payload": "one",
+      "tamper": "truncate-header",
+      "decrypt": [
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "format"
+        },
+        {
+          "name": null,
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "format"
+        },
+        {
+          "name": "foo",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "format"
+        },
+        {
+          "name": "foo",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "format"
+        },
+        {
+          "name": "bar",
+          "now": 1700000050,
+          "scoped": false,
+          "expect": "format"
+        },
+        {
+          "name": "bar",
+          "now": 1800000000,
+          "scoped": false,
+          "expect": "format"
+        },
+        {
+          "name": null,
+          "now": 1700000050,
+          "scoped": true,
+          "expect": "scope"
+        }
+      ]
+    }
+  ]
+}

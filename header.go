@@ -85,13 +85,10 @@ func Parse(blob []byte) (*Header, error) {
 	if h.KeySize != keySize {
 		return nil, ErrFormat
 	}
-	if h.BlockSize == 0 || h.BlockSize > FieldMax {
-		return nil, ErrFormat
-	}
-	if h.IVSize > FieldMax {
-		return nil, ErrFormat
-	}
-	if h.TagSize == 0 || h.TagSize > FieldMax {
+	// The cipher expectations of cu.c:1591-1608: this version speaks AES-256-GCM
+	// only, which fixes the block and tag sizes (and so bounds them by FieldMax);
+	// the IV size is bounded by FieldMax (cu.c:1573) and may not be zero.
+	if h.BlockSize != blockSize || h.TagSize != tagSize || h.IVSize == 0 || h.IVSize > FieldMax {
 		return nil, ErrFormat
 	}
 	var scoped uint64
@@ -110,10 +107,6 @@ func Parse(blob []byte) (*Header, error) {
 			return nil, &UnsupportedModeError{ID: id, Known: true, Reason: "scoped credential with unsupported flags"}
 		}
 		p += 8
-	}
-	// The cipher expectations of cu.c:1591-1608: this version speaks AES-256-GCM only.
-	if h.BlockSize != blockSize || h.TagSize != tagSize || h.IVSize == 0 {
-		return nil, ErrFormat
 	}
 	h.aadLen = p
 	return h, nil

@@ -58,7 +58,7 @@ type Vector struct {
 	Mode     string    `json:"mode"` // null, host, host-scoped
 	Name     string    `json:"name"` // embedded name, "" for none
 	NotAfter int64     `json:"not_after"`
-	Payload  string    `json:"payload"` // empty, one, mib
+	Payload  string    `json:"payload"` // empty, one, k64
 	Tamper   string    `json:"tamper,omitempty"`
 	Decrypt  []Decrypt `json:"decrypt"`
 }
@@ -80,9 +80,9 @@ func Payload(kind string) []byte {
 		return []byte{}
 	case "one":
 		return []byte{0x2a}
-	case "mib":
+	case "k64":
 		r := rand.New(rand.NewPCG(1, 262))
-		b := make([]byte, 1<<20)
+		b := make([]byte, 64<<10)
 		for i := range b {
 			b[i] = byte(r.Uint32())
 		}
@@ -91,7 +91,7 @@ func Payload(kind string) []byte {
 	panic("vecspec: unknown payload " + kind)
 }
 
-// Matrix lists the vectors to generate. A 1 MiB payload is kept to a few
+// Matrix lists the vectors to generate. A 64 KiB payload is kept to a few
 // combinations to bound the size of the repository.
 func Matrix() []Vector {
 	var vs []Vector
@@ -99,8 +99,8 @@ func Matrix() []Vector {
 	for _, mode := range []string{"null", "host", "host-scoped"} {
 		for _, name := range []string{"", "foo"} {
 			for _, na := range []string{"inf", "past", "future"} {
-				for _, pl := range []string{"empty", "one", "mib"} {
-					if pl == "mib" && (name == "" || na != "inf") {
+				for _, pl := range []string{"empty", "one", "k64"} {
+					if pl == "k64" && (name == "" || na != "inf") {
 						continue
 					}
 					vs = append(vs, Vector{

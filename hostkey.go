@@ -35,6 +35,9 @@ const (
 	MachineIDPath = "/etc/machine-id"
 )
 
+// machineIDFile is where ReadMachineID("") reads; a variable for the tests.
+var machineIDFile = MachineIDPath
+
 // credentialAppID is credential_app_id (cu.c:419-420).
 var credentialAppID = [16]byte{0xd3, 0xac, 0xec, 0xba, 0x0d, 0xad, 0x4c, 0xdf, 0xb8, 0xc9, 0x38, 0x15, 0x28, 0x93, 0x6c, 0x58}
 
@@ -82,7 +85,7 @@ func ParseMachineID(b []byte) ([16]byte, error) {
 // ReadMachineID reads and parses a machine-id file (MachineIDPath by default).
 func ReadMachineID(path string) ([16]byte, error) {
 	if path == "" {
-		path = MachineIDPath
+		path = machineIDFile
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {

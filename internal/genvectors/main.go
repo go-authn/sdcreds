@@ -22,29 +22,46 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
+	err := run(vecspec.Dir, "/etc/machine-id", func(args ...string) *exec.Cmd {
+		return exec.Command("systemd-creds", args...)
+	})
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "genvectors:", err)
 		os.Exit(1)
 	}
 }
 
-type creds struct{ secret string }
+// Seams for the tests: neither can fail on a real system.
+var (
+	absPath   = filepath.Abs
+	machineID = vecspec.MachineID
+)
+
+type creds struct {
+	secret  string
+	command func(args ...string) *exec.Cmd
+}
 
 func (c creds) cmd(args ...string) *exec.Cmd {
-	cmd := exec.Command("systemd-creds", args...)
+	cmd := c.command(args...)
 	cmd.Env = append(os.Environ(), "SYSTEMD_CREDENTIAL_SECRET="+c.secret)
 	return cmd
 }
 
-func run() error {
-	dir := vecspec.Dir
+// run writes the vectors and the manifest into dir, with the machine id
+// written to idPath, using command to start systemd-creds.
+func run(dir, idPath string, command func(args ...string) *exec.Cmd) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	if err := os.WriteFile("/etc/machine-id", []byte(vecspec.MachineID+"\n"), 0o444); err != nil {
+	if err := os.WriteFile(idPath, []byte(machineID+"\n"), 0o444); err != nil {
 		return err
 	}
-	c := creds{secret: filepath.Join(dir, "host.secret")}
+	abs, err := absPath(dir)
+	if err != nil {
+		return err
+	}
+	c := creds{secret: filepath.Join(abs, "host.secret"), command: command}
 	if _, err := os.Stat(c.secret); errors.Is(err, os.ErrNotExist) {
 		if out, err := c.cmd("setup").CombinedOutput(); err != nil {
 			return fmt.Errorf("setup: %v: %s", err, out)
@@ -56,7 +73,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	mid, err := sdcreds.ParseMachineID([]byte(vecspec.MachineID))
+	mid, err := sdcreds.ParseMachineID([]byte(machineID))
 	if err != nil {
 		return err
 	}
@@ -71,7 +88,7 @@ func run() error {
 	}
 	defer os.RemoveAll(tmp)
 
-	m := vecspec.Manifest{Systemd: "262.2", MachineID: vecspec.MachineID, User: vecspec.User, UID: vecspec.UID, Timestamp: vecspec.Timestamp}
+	m := vecspec.Manifest{Systemd: "262.2", MachineID: machineID, User: vecspec.User, UID: vecspec.UID, Timestamp: vecspec.Timestamp}
 	vectors := vecspec.Matrix()
 	for i := range vectors {
 		v := &vectors[i]
@@ -89,7 +106,7 @@ func run() error {
 	base := "host.name-foo.na-inf.one.cred"
 	for _, t := range []string{"flip-iv", "flip-ciphertext", "flip-tag", "truncate-tag", "truncate-header"} {
 		v := vecspec.Vector{File: strings.TrimSuffix(base, ".cred") + "." + t + ".cred", Mode: "host", Name: "foo", Payload: "one", Tamper: t}
-		if err := tamper(dir, base, &v); err != nil {
+		if err := doTamper(dir, base, &v); err != nil {
 			return err
 		}
 		v.Decrypt, err = decryptCases(c, dir, &v)
@@ -99,10 +116,8 @@ func run() error {
 		m.Vectors = append(m.Vectors, v)
 	}
 
-	b, err := json.MarshalIndent(m, "", "  ")
-	if err != nil {
-		return err
-	}
+	// Cannot fail: the manifest holds only strings and numbers.
+	b, _ := json.MarshalIndent(m, "", "  ")
 	return os.WriteFile(filepath.Join(dir, "manifest.json"), append(b, '\n'), 0o644)
 }
 
@@ -201,7 +216,7 @@ func classify(stderr string) vecspec.Class {
 	return ""
 }
 
-func tamper(dir, base string, v *vecspec.Vector) error {
+func doTamper(dir, base string, v *vecspec.Vector) error {
 	text, err := os.ReadFile(filepath.Join(dir, base))
 	if err != nil {
 		return err
