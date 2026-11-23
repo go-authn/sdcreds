@@ -35,9 +35,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: build the interop image (real systemd-creds from the v262.2 tag)
         run: docker build -t sdcreds-interop docker
-      - name: tests, both directions (systemd-creds is required, not skipped)
+      - name: tests, both directions, and s6-run as root (systemd-creds is required, not skipped)
         run: >
-          docker run --rm -e SDCREDS_REQUIRE_SYSTEMD=1
+          docker run --rm --privileged -e SDCREDS_REQUIRE_SYSTEMD=1 -e SDCREDS_S6_INTEGRATION=1
           -v "$PWD":/src/sdcreds -w /src/sdcreds sdcreds-interop
           sh -c 'echo 0123456789abcdef0123456789abcdef > /etc/machine-id && go test -count=1 -v ./...'
       - name: the committed vectors are what the generator writes
