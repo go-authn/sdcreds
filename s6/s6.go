@@ -54,6 +54,9 @@ type Ops struct {
 	Unmount        func(dir string) error // lazy; ErrNotMounted if not mounted
 	DropPrivileges func(u User) error
 	Exec           func(argv []string, env []string) error
+	// Resolve finds the executable of argv[0]; optional. Run calls it before
+	// anything is mounted.
+	Resolve func(argv0 string) (string, error)
 }
 
 // Config describes one run.
@@ -191,6 +194,13 @@ func Run(c Config, ops Ops) (err error) {
 	if err != nil {
 		return fmt.Errorf("s6: user %q: %w", c.User, err)
 	}
+	// A command that cannot be found is learned before anything is mounted: after
+	// the privileges are dropped nothing could take the credentials away again.
+	if ops.Resolve != nil {
+		if _, err := ops.Resolve(c.Command[0]); err != nil {
+			return fmt.Errorf("s6: command %q: %w", c.Command[0], err)
+		}
+	}
 	creds, err := load(c)
 	if err != nil {
 		return err
@@ -205,16 +215,37 @@ func Run(c Config, ops Ops) (err error) {
 		}
 	}
 	dir := Dir(c.BaseDir, c.Service)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	// The base directory is shared by every service and must stay traversable;
+	// only the directory of this service is private.
+	if err := os.MkdirAll(c.BaseDir, 0o755); err != nil {
 		return err
+	}
+	if err := os.Mkdir(dir, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	// A mount left by an earlier run (or a stack of them) must not survive
+	// under the new one.
+	if err := unmountAll(ops, dir); err != nil {
+		return fmt.Errorf("s6: %w", err)
 	}
 	mounted := false
 	defer func() {
-		if err != nil {
-			if mounted {
-				_ = ops.Unmount(dir)
+		if err == nil {
+			return
+		}
+		var left error
+		if mounted {
+			if uerr := unmountAll(ops, dir); uerr != nil {
+				left = fmt.Errorf("credentials left mounted at %s: %w", dir, uerr)
 			}
-			_ = os.Remove(dir)
+		}
+		if left == nil {
+			if rerr := os.Remove(dir); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
+				left = fmt.Errorf("could not remove %s: %w", dir, rerr)
+			}
+		}
+		if left != nil {
+			err = fmt.Errorf("%w; %w", err, left)
 		}
 	}()
 	if err := ops.MountRAM(dir); err != nil {
@@ -253,6 +284,24 @@ func Run(c Config, ops Ops) (err error) {
 	return fmt.Errorf("s6: exec %s: %w", c.Command[0], ops.Exec(c.Command, env))
 }
 
+// maxLayers bounds the mounts stacked on one directory that unmountAll peels.
+const maxLayers = 64
+
+// unmountAll unmounts dir until nothing is mounted there: mounts stack, and a
+// single unmount would uncover the layer below it.
+func unmountAll(ops Ops, dir string) error {
+	for i := 0; i < maxLayers; i++ {
+		err := ops.Unmount(dir)
+		if errors.Is(err, ErrNotMounted) || errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf("%s is still mounted after %d unmounts", dir, maxLayers)
+}
+
 // Finish releases the credentials of a service: the mount goes (lazily, so a
 // process still holding a file keeps a private copy until it exits) and the
 // empty directory is removed. It is idempotent.
@@ -261,7 +310,7 @@ func Finish(service, base string, ops Ops) error {
 		return err
 	}
 	dir := Dir(base, service)
-	if err := ops.Unmount(dir); err != nil && !errors.Is(err, ErrNotMounted) && !errors.Is(err, os.ErrNotExist) {
+	if err := unmountAll(ops, dir); err != nil {
 		return fmt.Errorf("s6: unmount %s: %w", dir, err)
 	}
 	if err := os.Remove(dir); err != nil && !errors.Is(err, os.ErrNotExist) {

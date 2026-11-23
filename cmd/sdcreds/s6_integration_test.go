@@ -52,8 +52,8 @@ func TestS6AsRoot(t *testing.T) {
 		`echo "mount=$(grep " $d " /proc/self/mounts)"; (echo x > "$d/new") 2>/dev/null && echo writable || echo readonly`
 	for _, unshare := range []bool{true, false} {
 		args := []string{"s6-run", "--service=web", "--user=sdcreds-test", "--base-dir=" + base, "--source=" + src}
-		if unshare {
-			args = append(args, "--unshare")
+		if !unshare {
+			args = append(args, "--unshare=false")
 		}
 		out, err := sdcreds("", append(args, "--", "/bin/sh", "-c", script)...)
 		if err != nil {
@@ -72,6 +72,17 @@ func TestS6AsRoot(t *testing.T) {
 		if mounted == unshare {
 			t.Errorf("unshare=%v: mounted in the host namespace: %v", unshare, mounted)
 		}
+		if !unshare {
+			// A second run without a finish must not stack a mount on the
+			// first, and one finish must leave nothing mounted.
+			if out, err := sdcreds("", append(args, "--", "/bin/true")...); err != nil {
+				t.Fatalf("second run: %v: %s", err, out)
+			}
+			mounts, _ = os.ReadFile("/proc/self/mounts")
+			if n := strings.Count(string(mounts), filepath.Join(base, "web")+" "); n != 1 {
+				t.Errorf("%d mounts of the service directory after two runs", n)
+			}
+		}
 		if out, err := sdcreds("", "s6-finish", "--service=web", "--base-dir="+base); err != nil {
 			t.Fatalf("finish: %v: %s", err, out)
 		}
@@ -85,5 +96,15 @@ func TestS6AsRoot(t *testing.T) {
 		if out, err := sdcreds("", "s6-finish", "--service=web", "--base-dir="+base); err != nil {
 			t.Errorf("finish is not idempotent: %v: %s", err, out)
 		}
+	}
+	// A command that does not exist fails before anything is mounted, even
+	// without a private namespace.
+	args := []string{"s6-run", "--service=web", "--user=sdcreds-test", "--base-dir=" + base, "--source=" + src, "--unshare=false", "--", "/nonexistent/cmd"}
+	if out, err := sdcreds("", args...); err == nil {
+		t.Errorf("a missing command was run: %s", out)
+	}
+	mounts, _ := os.ReadFile("/proc/self/mounts")
+	if strings.Contains(string(mounts), filepath.Join(base, "web")) {
+		t.Error("credentials left mounted after a failed exec")
 	}
 }

@@ -80,8 +80,10 @@ per-service `tmpfs` (`nodev,noexec,nosuid,nosymfollow,noswap`, mode 0700, size a
 inode count bounded; `ramfs` if the kernel lacks those options), writes the
 plaintext 0400 owned by the service user, remounts it read-only, sets
 `CREDENTIALS_DIRECTORY`, drops privileges and execs. Any failure undoes the
-mount. `--unshare` puts the mount in a private namespace, so it disappears with
-the service. `sdcreds s6-finish --service=web` unmounts lazily and removes the
+mount. The mount lives in a private namespace by default (`--unshare=false` turns
+that off), so it disappears with the service. The command is looked up before
+anything is mounted. A credential sealed with the null key is refused unless
+`--allow-null` is given, and one that carries no name is always refused. `sdcreds s6-finish --service=web` unmounts lazily and removes the
 directory; it is idempotent. At most 1024 credentials and 16 MiB per service.
 Linux only; elsewhere the commands report `ErrUnsupported`.
 

@@ -27,6 +27,8 @@ type rig struct {
 	// failChown makes the chown of one file (by base name) fail on its own
 	failChown map[string]error
 	user      User
+	// layers counts the mounts stacked on the directory
+	layers int
 	// the credentials directory as it is when the command is executed
 	files   map[string]string
 	perms   map[string]os.FileMode
@@ -45,8 +47,11 @@ func (r *rig) ops() Ops {
 			}
 			return r.user, nil
 		},
-		Unshare:   func() error { return rec("unshare") },
-		MountRAM:  func(string) error { return rec("mount") },
+		Unshare: func() error { return rec("unshare") },
+		MountRAM: func(string) error {
+			r.layers++
+			return rec("mount")
+		},
 		RemountRO: func(string) error { return rec("remount") },
 		Chown: func(p string, uid, gid int) error {
 			r.chown[filepath.Base(p)] = [2]int{uid, gid}
@@ -56,13 +61,19 @@ func (r *rig) ops() Ops {
 			return rec("chown")
 		},
 		Unmount: func(dir string) error {
-			err := rec("unmount")
+			if err := rec("unmount"); err != nil {
+				return err
+			}
+			if r.layers == 0 {
+				return ErrNotMounted
+			}
+			r.layers--
 			// the files of a real tmpfs vanish with the mount
 			ents, _ := os.ReadDir(dir)
 			for _, e := range ents {
 				os.Remove(filepath.Join(dir, e.Name()))
 			}
-			return err
+			return nil
 		},
 		DropPrivileges: func(User) error { return rec("drop") },
 		Exec: func(argv, env []string) error {
@@ -135,7 +146,9 @@ func TestRunHappyPath(t *testing.T) {
 		t.Fatalf("%v", err)
 	}
 	// The failure of exec itself is undone like any other: unmount comes last.
-	want := []string{"lookup", "unshare", "mount", "chown", "chown", "chown", "remount", "drop", "exec", "unmount"}
+	// The first unmount clears anything stacked there before; the last two peel
+	// the one layer and find nothing below it.
+	want := []string{"lookup", "unshare", "unmount", "mount", "chown", "chown", "chown", "remount", "drop", "exec", "unmount", "unmount"}
 	if !slices.Equal(r.calls, want) {
 		t.Errorf("order of the privileged calls:\n got %v\nwant %v", r.calls, want)
 	}
@@ -211,7 +224,11 @@ func TestRunLeavesNothingBehind(t *testing.T) {
 			t.Errorf("%s: %v", step, err)
 		}
 		mounted := slices.Contains(r.calls, "mount") && step != "mount"
-		if got := slices.Contains(r.calls, "unmount"); got != mounted {
+		after := r.calls[slices.Index(r.calls, "mount")+1:]
+		if step == "mount" || !slices.Contains(r.calls, "mount") {
+			after = nil
+		}
+		if got := slices.Contains(after, "unmount"); got != mounted {
 			t.Errorf("%s: unmount=%v mounted=%v %v", step, got, mounted, r.calls)
 		}
 		if _, err := os.Stat(filepath.Join(c.BaseDir, "web")); err == nil && step != "lookup" && step != "unshare" {

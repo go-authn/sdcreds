@@ -412,7 +412,7 @@ func (f *s6Flags) register(cmd *cobra.Command, run bool) {
 		fl.StringVar(&f.user, "user", "", "user that owns the credentials and runs the command")
 		fl.StringVar(&f.source, "source", "", "directory of encrypted credentials, one file each")
 		fl.BoolVar(&f.allowNull, "allow-null", false, "accept credentials sealed with the null key (no secrecy)")
-		fl.BoolVar(&f.unshare, "unshare", false, "give this process a private mount namespace")
+		fl.BoolVar(&f.unshare, "unshare", true, "give this process a private mount namespace (the mount then dies with the service)")
 		_ = cmd.MarkFlagRequired("user")
 		_ = cmd.MarkFlagRequired("source")
 	}

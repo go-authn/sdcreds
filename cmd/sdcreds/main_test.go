@@ -9,6 +9,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -360,13 +361,18 @@ func TestSetupNeverOverwrites(t *testing.T) {
 func fakeOps(calls *[]string, execErr error) func() s6.Ops {
 	return func() s6.Ops {
 		rec := func(n string) error { *calls = append(*calls, n); return nil }
+		layers := 0
 		return s6.Ops{
 			LookupUser: func(string) (s6.User, error) { rec("lookup"); return s6.User{UID: 1, GID: 1}, nil },
-			Unshare:    func() error { return rec("unshare") }, MountRAM: func(string) error { return rec("mount") },
+			Unshare:    func() error { return rec("unshare") }, MountRAM: func(string) error { layers++; return rec("mount") },
 			Chown:     func(string, int, int) error { return nil },
 			RemountRO: func(string) error { return rec("remount") },
 			Unmount: func(d string) error {
 				rec("unmount")
+				if layers == 0 {
+					return s6.ErrNotMounted
+				}
+				layers--
 				ents, _ := os.ReadDir(d)
 				for _, e := range ents {
 					os.Remove(filepath.Join(d, e.Name()))
@@ -404,6 +410,18 @@ func TestS6RunHardening(t *testing.T) {
 	// `decrypt` do not reach the privileged helper.
 	t.Setenv("SYSTEMD_CREDENTIAL_VALIDATE_NAME", "0")
 	t.Setenv("SYSTEMD_CREDENTIAL_VALIDATE_NOT_AFTER", "0")
+	// The mount lives in a private namespace unless that is turned off, so that
+	// a failed exec cannot leave the plaintext mounted for the whole host.
+	good := mustRun(t, "x", "encrypt", "--with-key=null", "--name=db")
+	os.WriteFile(filepath.Join(src, "db"), []byte(good), 0o600)
+	if err := runS6(); err == nil || !slices.Contains(calls, "unshare") {
+		t.Errorf("default: %v %v", err, calls)
+	}
+	calls = nil
+	run(t, "", "s6-run", "--service=web", "--user=svc", "--base-dir="+base, "--source="+src, "--allow-null", "--unshare=false", "--", "/bin/web")
+	if slices.Contains(calls, "unshare") || !slices.Contains(calls, "mount") {
+		t.Errorf("--unshare=false: %v", calls)
+	}
 	os.Remove(filepath.Join(src, "db"))
 	enc := mustRun(t, "x", "encrypt", "--with-key=null", "--name=db")
 	os.WriteFile(filepath.Join(src, "renamed"), []byte(enc), 0o600)
@@ -444,7 +462,7 @@ func TestS6RunAndFinish(t *testing.T) {
 	if err != nil && !errors.Is(err, boom) {
 		t.Fatal(err)
 	}
-	want := "lookup unshare mount remount drop exec /bin/web -v unmount"
+	want := "lookup unshare unmount mount remount drop exec /bin/web -v unmount unmount"
 	if strings.Join(calls, " ") != want {
 		t.Errorf("calls: %v", calls)
 	}

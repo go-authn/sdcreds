@@ -28,6 +28,7 @@ func Real() Ops {
 		Unmount:        unmount,
 		DropPrivileges: dropPrivileges,
 		Exec:           execve,
+		Resolve:        exec.LookPath,
 	}
 }
 
