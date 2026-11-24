@@ -23,6 +23,9 @@ const midText = "0123456789abcdef0123456789abcdef\n"
 func env(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
+	// A test that names a relative path (or "-" as an output file) writes it
+	// here, never into the source tree.
+	t.Chdir(dir)
 	mid := filepath.Join(dir, "machine-id")
 	if err := os.WriteFile(mid, []byte(midText), 0o444); err != nil {
 		t.Fatal(err)

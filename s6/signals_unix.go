@@ -21,6 +21,10 @@ var (
 	stopSignals   = signal.Stop
 )
 
+// raise sends signal sig (a number caught returned) to this process, a seam
+// for the tests.
+var raise = func(sig int) error { return syscall.Kill(os.Getpid(), syscall.Signal(sig)) }
+
 // heldBuffer is how many signals wait for caught between two calls of it; a
 // signal that finds the buffer full is dropped, never delivered.
 const heldBuffer = 64

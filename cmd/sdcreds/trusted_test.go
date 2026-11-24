@@ -391,3 +391,30 @@ func TestS6RunWipesTheKeyAfterwards(t *testing.T) {
 		t.Error("the credential still opens: the key was not wiped when s6-run ended")
 	}
 }
+
+// The key is wiped by Decrypted, which s6 calls as soon as decryption ends and
+// before the service starts, not only when s6-run returns.
+func TestS6RunWipesTheKeyBeforeTheServiceStarts(t *testing.T) {
+	src, base, secret, mid := hostSealed(t)
+	asOwner(t, uint32(os.Getuid()))
+	withOps(t)
+	oldRun := s6Run
+	defer func() { s6Run = oldRun }()
+	var before, after error
+	var hooked bool
+	s6Run = func(c s6.Config, o s6.Ops) error {
+		enc, _ := os.ReadFile(filepath.Join(src, "db"))
+		_, before = c.Decrypt("db", enc)
+		hooked = c.Decrypted != nil
+		if hooked {
+			c.Decrypted()
+		}
+		_, after = c.Decrypt("db", enc)
+		return nil
+	}
+	_, _, err := run(t, "", "s6-run", "--service=web", "--user=svc", "--base-dir="+base, "--source="+src,
+		"--secret="+secret, "--machine-id-file="+mid, "--", "/bin/web")
+	if err != nil || !hooked || before != nil || after == nil {
+		t.Errorf("run=%v hooked=%v before=%v after=%v", err, hooked, before, after)
+	}
+}

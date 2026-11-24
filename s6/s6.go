@@ -117,6 +117,11 @@ type Config struct {
 	// Decrypt opens the encrypted file called name. It is where the key, the
 	// name binding and the null-key policy are applied.
 	Decrypt func(name string, encrypted []byte) ([]byte, error)
+	// Decrypted, when set, is called once the credentials are decrypted (or
+	// their decryption failed) and before anything is mounted or started: the
+	// caller wipes the key there, so it does not stay in memory while the
+	// service runs.
+	Decrypted func()
 }
 
 func validate(service, base string) error {
@@ -275,6 +280,9 @@ func Run(c Config, ops Ops) (err error) {
 		}
 	}
 	creds, err := load(c)
+	if c.Decrypted != nil {
+		c.Decrypted()
+	}
 	if err != nil {
 		return err
 	}
@@ -439,6 +447,14 @@ func Run(c Config, ops Ops) (err error) {
 	if err != nil {
 		return fmt.Errorf("s6: start %s: %w", c.Command[0], err)
 	}
+	// A signal that came after the check above and before Start began to forward
+	// them was held and forwarded to nobody: raised again now, it reaches the
+	// service through Start's forwarding.
+	if sig := caught(); sig != 0 {
+		if err := raise(sig); err != nil {
+			return fmt.Errorf("s6: forwarding signal %d: %w", sig, err)
+		}
+	}
 	code, err := wait()
 	if err != nil {
 		return fmt.Errorf("s6: waiting for %s: %w", c.Command[0], err)
@@ -583,20 +599,20 @@ func Finish(service, base string, ops Ops) error {
 		return err
 	}
 	// A run that was ended while it staged leaves its staging mount behind.
-	if err := sweepStages(service, base, ops); err != nil {
-		return err
-	}
+	// A sweep that fails does not keep the live credential mount: it is taken
+	// away below, and both errors are reported.
+	sweepErr := sweepStages(service, base, ops)
 	if _, err := os.Lstat(dir); errors.Is(err, os.ErrNotExist) {
-		return nil
+		return sweepErr
 	}
 	if err := requireDir(dir); err != nil {
-		return err
+		return errors.Join(sweepErr, err)
 	}
 	if err := unmountAll(ops, dir); err != nil {
-		return fmt.Errorf("s6: unmount %s: %w", dir, err)
+		return errors.Join(sweepErr, fmt.Errorf("s6: unmount %s: %w", dir, err))
 	}
 	if err := os.Remove(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("s6: %w", err)
+		return errors.Join(sweepErr, fmt.Errorf("s6: %w", err))
 	}
-	return nil
+	return sweepErr
 }

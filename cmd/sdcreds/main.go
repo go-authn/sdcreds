@@ -487,6 +487,9 @@ func s6RunCmd() *cobra.Command {
 			c := s6.Config{
 				Service: f.service, User: f.user, BaseDir: f.baseDir, Source: f.source,
 				Unshare: f.unshare, Command: args, Env: os.Environ(),
+				// The key is wiped as soon as decryption ends, before the
+				// service starts; the defer above stays for an early return.
+				Decrypted: wipe,
 				Decrypt: func(name string, enc []byte) ([]byte, error) {
 					blob, err := sdcreds.Unarmor(enc)
 					if err != nil {

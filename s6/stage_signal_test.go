@@ -273,3 +273,109 @@ func TestStagePrefixIsPerService(t *testing.T) {
 		t.Errorf("a service of NameMax bytes cannot be staged: %d", len(long))
 	}
 }
+
+// A signal that lands after Run's last check and before Start has begun to
+// forward them was held by Run alone: once the service runs, it is raised
+// again so that the forwarding of Start delivers it, and is not swallowed.
+func TestSignalHeldAcrossStartIsRaisedAgain(t *testing.T) {
+	r, c := newRig(t), config(t)
+	deliver := signalRig(t, r)
+	var raised []int
+	old := raise
+	t.Cleanup(func() { raise = old })
+	raise = func(sig int) error { raised = append(raised, sig); return nil }
+	o := r.ops()
+	o.Start = func(User, []string, []string) (func() (int, error), error) {
+		deliver(syscall.SIGCONT, syscall.SIGTERM, syscall.SIGINT)
+		return func() (int, error) { return 0, nil }, nil
+	}
+	if err := Run(c, o); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(raised, []int{int(syscall.SIGTERM)}) {
+		t.Errorf("raised %v", raised)
+	}
+	// no signal, nothing to raise
+	raised = nil
+	r2 := newRig(t)
+	signalRig(t, r2)
+	o2 := r2.ops()
+	o2.Start = func(User, []string, []string) (func() (int, error), error) {
+		return func() (int, error) { return 0, nil }, nil
+	}
+	if err := Run(config(t), o2); err != nil || len(raised) != 0 {
+		t.Errorf("%v %v", err, raised)
+	}
+}
+
+// A failure to raise the signal is reported, not dropped.
+func TestSignalThatCannotBeRaisedIsReported(t *testing.T) {
+	r, c := newRig(t), config(t)
+	deliver := signalRig(t, r)
+	old := raise
+	t.Cleanup(func() { raise = old })
+	boom := errors.New("boom")
+	raise = func(int) error { return boom }
+	o := r.ops()
+	o.Start = func(User, []string, []string) (func() (int, error), error) {
+		deliver(syscall.SIGTERM)
+		return func() (int, error) { return 0, nil }, nil
+	}
+	if err := Run(c, o); !errors.Is(err, boom) {
+		t.Errorf("%v", err)
+	}
+}
+
+// Decrypted is called after the credentials are read, before the first mount,
+// and also when decryption fails.
+func TestDecryptedIsCalledBeforeAnythingIsMounted(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		r, c := newRig(t), config(t)
+		var seen []string
+		c.Decrypted = func() { seen = append(seen, "decrypted"); r.calls = append(r.calls, "decrypted") }
+		if fail {
+			c.Decrypt = func(string, []byte) ([]byte, error) { return nil, errors.New("no key") }
+		}
+		o := r.ops()
+		o.Start = func(User, []string, []string) (func() (int, error), error) {
+			return func() (int, error) { return 0, nil }, nil
+		}
+		err := Run(c, o)
+		if (err != nil) != fail {
+			t.Errorf("fail=%v: %v", fail, err)
+		}
+		if len(seen) != 1 {
+			t.Errorf("fail=%v: called %d times", fail, len(seen))
+		}
+		if slices.Index(r.calls, "mount") >= 0 && slices.Index(r.calls, "decrypted") > slices.Index(r.calls, "mount") {
+			t.Errorf("fail=%v: after the mount: %v", fail, r.calls)
+		}
+	}
+}
+
+// A sweep that fails still leaves the live credential mount taken away, and
+// the error is reported.
+func TestFinishTakesTheLiveMountAwayWhenTheSweepFails(t *testing.T) {
+	base := t.TempDir()
+	r := newRig(t)
+	stage := filepath.Join(base, stagePrefix("web")+"1")
+	if err := os.MkdirAll(filepath.Join(stage, "mnt", "left"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	live := Dir(base, "web")
+	if err := os.MkdirAll(live, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	r.layers[live] = 1
+	ops := r.ops()
+	ops.MountSource = func(dir string) (string, bool, error) { return MountTag, r.layers[dir] > 0, nil }
+	if err := Finish("web", base, ops); err == nil {
+		t.Error("the failed sweep was not reported")
+	}
+	if r.layers[live] != 0 {
+		t.Error("the live credential mount was left")
+	}
+	if _, err := os.Lstat(live); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the credential directory is left: %v", err)
+	}
+}
