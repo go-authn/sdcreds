@@ -21,10 +21,6 @@ var (
 	stopSignals   = signal.Stop
 )
 
-// raise sends signal sig (a number caught returned) to this process, a seam
-// for the tests.
-var raise = func(sig int) error { return syscall.Kill(os.Getpid(), syscall.Signal(sig)) }
-
 // heldBuffer is how many signals wait for caught between two calls of it; a
 // signal that finds the buffer full is dropped, never delivered.
 const heldBuffer = 64
@@ -35,7 +31,12 @@ const heldBuffer = 64
 // many times s6 asks to stop. caught reports (and forgets) the number of the
 // first signal that would have ended the process since the last call, 0 when
 // there is none: before the service runs, Run stops on it, after the clean-up.
-func holdSignals() (release func(), caught func() int) {
+//
+// held is the channel the signals arrive on. Once the service runs, its
+// forwarder is the only reader of held, so a signal is delivered to the service
+// exactly once: one that came before the fork waits in the buffer and is read
+// first, one that comes later is read when it arrives.
+func holdSignals() (release func(), caught func() int, held <-chan os.Signal) {
 	ch := make(chan os.Signal, heldBuffer)
 	notifySignals(ch, forwarded...)
 	release = func() { stopSignals(ch) }
@@ -53,5 +54,5 @@ func holdSignals() (release func(), caught func() int) {
 			}
 		}
 	}
-	return release, caught
+	return release, caught, ch
 }

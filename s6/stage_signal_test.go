@@ -151,7 +151,7 @@ func TestSignalStatusIsTheFirstFatalSignal(t *testing.T) {
 func TestHoldSignalsCaughtForgets(t *testing.T) {
 	r := newRig(t)
 	deliver := signalRig(t, r)
-	release, caught := holdSignals()
+	release, caught, _ := holdSignals()
 	if caught() != 0 {
 		t.Error("a signal out of nothing")
 	}
@@ -274,55 +274,62 @@ func TestStagePrefixIsPerService(t *testing.T) {
 	}
 }
 
-// A signal that lands after Run's last check and before Start has begun to
-// forward them was held by Run alone: once the service runs, it is raised
-// again so that the forwarding of Start delivers it, and is not swallowed.
-func TestSignalHeldAcrossStartIsRaisedAgain(t *testing.T) {
+// The held signals are handed to the starter, the only reader of them from
+// then on: a signal that came in the gap before the service was forked is
+// delivered once, one that comes after the forwarding began is delivered once,
+// and none is delivered twice (HUP and USR1 mean "reload" to a service).
+func TestEverySignalIsDeliveredToTheServiceOnce(t *testing.T) {
 	r, c := newRig(t), config(t)
 	deliver := signalRig(t, r)
-	var raised []int
-	old := raise
-	t.Cleanup(func() { raise = old })
-	raise = func(sig int) error { raised = append(raised, sig); return nil }
 	o := r.ops()
-	o.Start = func(User, []string, []string) (func() (int, error), error) {
-		deliver(syscall.SIGCONT, syscall.SIGTERM, syscall.SIGINT)
-		return func() (int, error) { return 0, nil }, nil
+	var got []syscall.Signal
+	o.StartSignals = func(held <-chan os.Signal, _ User, _, _ []string) (func() (int, error), error) {
+		deliver(syscall.SIGHUP) // in the gap: after Run's check, before forwarding
+		return func() (int, error) {
+			// the forwarder: reads the gap signal first, then the next ones
+			got = append(got, (<-held).(syscall.Signal))
+			deliver(syscall.SIGUSR1) // after the forwarding began
+			got = append(got, (<-held).(syscall.Signal))
+			select {
+			case s := <-held:
+				t.Errorf("%v delivered twice", s)
+			default:
+			}
+			return 0, nil
+		}, nil
 	}
 	if err := Run(c, o); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(raised, []int{int(syscall.SIGTERM)}) {
-		t.Errorf("raised %v", raised)
-	}
-	// no signal, nothing to raise
-	raised = nil
-	r2 := newRig(t)
-	signalRig(t, r2)
-	o2 := r2.ops()
-	o2.Start = func(User, []string, []string) (func() (int, error), error) {
-		return func() (int, error) { return 0, nil }, nil
-	}
-	if err := Run(config(t), o2); err != nil || len(raised) != 0 {
-		t.Errorf("%v %v", err, raised)
+	if !slices.Equal(got, []syscall.Signal{syscall.SIGHUP, syscall.SIGUSR1}) {
+		t.Errorf("delivered %v", got)
 	}
 }
 
-// A failure to raise the signal is reported, not dropped.
-func TestSignalThatCannotBeRaisedIsReported(t *testing.T) {
+// When Ops has StartSignals, Start is not used, and Run's own reading of the
+// held signals stops at the fork: a signal read by Run's check is not forwarded.
+func TestSignalReadByTheCheckIsNotForwarded(t *testing.T) {
 	r, c := newRig(t), config(t)
 	deliver := signalRig(t, r)
-	old := raise
-	t.Cleanup(func() { raise = old })
-	boom := errors.New("boom")
-	raise = func(int) error { return boom }
 	o := r.ops()
+	started := false
 	o.Start = func(User, []string, []string) (func() (int, error), error) {
-		deliver(syscall.SIGTERM)
+		t.Error("Start used though StartSignals is set")
+		return nil, errors.New("no")
+	}
+	o.StartSignals = func(held <-chan os.Signal, _ User, _, _ []string) (func() (int, error), error) {
+		started = true
+		select {
+		case s := <-held:
+			t.Errorf("a signal left over: %v", s)
+		default:
+		}
 		return func() (int, error) { return 0, nil }, nil
 	}
-	if err := Run(c, o); !errors.Is(err, boom) {
-		t.Errorf("%v", err)
+	mount := o.Move
+	o.Move = func(a, b string) error { deliver(syscall.SIGCONT); return mount(a, b) }
+	if err := Run(c, o); err != nil || !started {
+		t.Errorf("%v started=%v", err, started)
 	}
 }
 

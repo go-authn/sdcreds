@@ -41,13 +41,16 @@ const hardening = syscall.MS_NODEV | syscall.MS_NOEXEC | syscall.MS_NOSUID | msN
 // Real returns the Linux implementation; it needs root.
 func Real() Ops {
 	return Ops{
-		LookupUser:  lookupUser,
-		Unshare:     unshare,
-		MountRAM:    mountRAM,
-		Chown:       os.Lchown,
-		RemountRO:   remountRO,
-		Unmount:     unmount,
-		Start:       start,
+		LookupUser: lookupUser,
+		Unshare:    unshare,
+		MountRAM:   mountRAM,
+		Chown:      os.Lchown,
+		RemountRO:  remountRO,
+		Unmount:    unmount,
+		Start:      start,
+		StartSignals: func(held <-chan os.Signal, u User, argv, env []string) (func() (int, error), error) {
+			return startWith(held, func() {}, u, argv, env)
+		},
 		Resolve:     exec.LookPath,
 		Move:        move,
 		FSType:      fsType,

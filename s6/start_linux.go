@@ -43,6 +43,24 @@ var (
 // the exit status is returned by wait; the child gets SIGKILL if this process
 // dies.
 func start(u User, argv, env []string) (func() (int, error), error) {
+	sigs := make(chan os.Signal, 16)
+	signal.Notify(sigs, forwarded...)
+	return startWith(sigs, func() { signal.Stop(sigs) }, u, argv, env)
+}
+
+// startWith is start with the signals to forward given: every signal read from
+// sigs is delivered to the service exactly once, whether it arrived before or
+// after the service was forked, because sigs has one reader. stop is called once
+// the service has ended or failed to start.
+func startWith(sigs <-chan os.Signal, stop func(), u User, argv, env []string) (func() (int, error), error) {
+	fin := make(chan struct{})
+	started := false
+	defer func() {
+		if !started {
+			stop()
+			close(fin)
+		}
+	}()
 	path, err := exec.LookPath(argv[0])
 	if err != nil {
 		return nil, err
@@ -62,23 +80,27 @@ func start(u User, argv, env []string) (func() (int, error), error) {
 	defer root.Close()
 	wd, _ := os.Getwd()
 
-	sigs := make(chan os.Signal, 16)
-	signal.Notify(sigs, forwarded...)
 	ready, done := make(chan error, 1), make(chan outcome, 1)
+	started = true
 	go func() {
 		// Never unlocked: this thread takes the identity of the service and ends
 		// with the goroutine, so it cannot be reused by anything else. It must
 		// also outlive the child (the parent-death signal is tied to it).
 		runtime.LockOSThread()
-		defer func() { signal.Stop(sigs); close(sigs) }()
+		defer func() { stop(); close(fin) }()
 		cmd, err := launch(ns, root, wd, u, path, argv, env)
 		ready <- err
 		if err != nil {
 			return
 		}
 		go func() {
-			for s := range sigs {
-				_ = cmd.Process.Signal(s)
+			for {
+				select {
+				case s := <-sigs:
+					_ = cmd.Process.Signal(s)
+				case <-fin:
+					return
+				}
 			}
 		}()
 		done <- exitOutcome(cmd.Wait())

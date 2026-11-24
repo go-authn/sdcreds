@@ -65,6 +65,10 @@ type Ops struct {
 	// wait blocks until the program ends and returns its exit status (128 plus the
 	// number of the signal that killed it).
 	Start func(u User, argv []string, env []string) (wait func() (int, error), err error)
+	// StartSignals, when set, is used instead of Start: the same, but the signals
+	// to forward to the program are read from held, which Run holds from before
+	// the first mount; the starter is their only reader from then on.
+	StartSignals func(held <-chan os.Signal, u User, argv []string, env []string) (wait func() (int, error), err error)
 	// Resolve finds the executable of argv[0]; optional. Run calls it before
 	// anything is mounted.
 	Resolve func(argv0 string) (string, error)
@@ -292,7 +296,7 @@ func Run(c Config, ops Ops) (err error) {
 	// plaintext mounted. Registered before the clean-up, so released after it.
 	// A signal that arrives before the service runs is acted on once everything
 	// is taken away: Run then returns the status of a process killed by it.
-	releaseSignals, caught := holdSignals()
+	releaseSignals, caught, held := holdSignals()
 	defer releaseSignals()
 	interrupted := func() error {
 		if sig := caught(); sig != 0 {
@@ -443,17 +447,18 @@ func Run(c Config, ops Ops) (err error) {
 	}
 	// While the service runs, Start forwards the signals to it; held as they
 	// are, a second TERM during the clean-up cannot leave the mount behind.
-	wait, err := ops.Start(u, c.Command, env)
+	// The held signals are handed to the forwarder, which becomes their only
+	// reader: one that came after the check above waits in the buffer and is
+	// delivered once, one that comes later is delivered once when it arrives.
+	startFn := ops.Start
+	if ops.StartSignals != nil {
+		startFn = func(u User, argv, env []string) (func() (int, error), error) {
+			return ops.StartSignals(held, u, argv, env)
+		}
+	}
+	wait, err := startFn(u, c.Command, env)
 	if err != nil {
 		return fmt.Errorf("s6: start %s: %w", c.Command[0], err)
-	}
-	// A signal that came after the check above and before Start began to forward
-	// them was held and forwarded to nobody: raised again now, it reaches the
-	// service through Start's forwarding.
-	if sig := caught(); sig != 0 {
-		if err := raise(sig); err != nil {
-			return fmt.Errorf("s6: forwarding signal %d: %w", sig, err)
-		}
 	}
 	code, err := wait()
 	if err != nil {
