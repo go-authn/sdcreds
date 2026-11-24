@@ -299,11 +299,19 @@ func TestS6HostKey(t *testing.T) {
 	// secret in the environment changes nothing.
 	t.Setenv(sdcreds.HostSecretEnv, filepath.Join(t.TempDir(), "other"))
 	t.Setenv(MachineIDEnv, filepath.Join(t.TempDir(), "other"))
-	d, wipe, _ := s6HostKey("", mid)
-	wipe()
-	if f, ok := d.(sdcreds.HostKeyFile); !ok || f.Path != sdcreds.DefaultHostSecretPath || f.MachineID == ([16]byte{}) {
-		t.Errorf("default key source %+v", d)
-	}
+	func() {
+		// a deleted default branch would read a nil file: say so by assertion
+		defer func() {
+			if r := recover(); r != nil {
+				t.Errorf("the default key source crashed: %v", r)
+			}
+		}()
+		d, wipe, _ := s6HostKey("", mid)
+		wipe()
+		if f, ok := d.(sdcreds.HostKeyFile); !ok || f.Path != sdcreds.DefaultHostSecretPath || f.MachineID == ([16]byte{}) {
+			t.Errorf("default key source %+v", d)
+		}
+	}()
 	// A machine id that is not 32 hex digits is refused.
 	short := filepath.Join(filepath.Dir(mid), "short-id")
 	os.WriteFile(short, []byte("abcd\n"), 0o444)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -32,6 +33,19 @@ func TestHostKeyFromFile(t *testing.T) {
 	}
 	if _, err := HostKeyFromFile(f, [16]byte{8}); !errors.Is(err, ErrHostKeyMachine) {
 		t.Errorf("other machine: %v", err)
+	}
+	// a file the checks refuse is an error, and no key.
+	loose := filepath.Join(filepath.Dir(p), "loose")
+	if err := os.WriteFile(loose, body, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	lf, err := os.Open(loose)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lf.Close()
+	if k, err := HostKeyFromFile(lf, mid); err == nil || k != nil || !strings.Contains(err.Error(), "permissive") {
+		t.Errorf("loose file: %x %v", k, err)
 	}
 	if err := os.Rename(p, p+".aside"); err != nil {
 		t.Fatal(err)
