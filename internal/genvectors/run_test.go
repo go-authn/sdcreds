@@ -160,6 +160,18 @@ func fake(t *testing.T, mode string) func(args ...string) *exec.Cmd {
 	t.Helper()
 	t.Setenv("GENVECTORS_FAKE", "1")
 	t.Setenv("GENVECTORS_FAKE_MODE", mode)
+	// Under -race the runtime sleeps atexit_sleep_ms (1000 by default) before a
+	// process exits. The generator starts the stand-in about 540 times per run,
+	// so that is 350 s per test instead of 0.4 s (measured: setup 1.013 s, the
+	// same encrypt 0.007 s with atexit_sleep_ms=0). The sleep only lets a
+	// running race report flush; the stand-in is a child whose reports the test
+	// does not read. The stand-in still runs with the race detector on; CI also
+	// runs the whole matrix without -race.
+	race := "atexit_sleep_ms=0"
+	if old := os.Getenv("GORACE"); old != "" {
+		race = old + " " + race
+	}
+	t.Setenv("GORACE", race)
 	return func(args ...string) *exec.Cmd { return exec.Command(os.Args[0], args...) }
 }
 
