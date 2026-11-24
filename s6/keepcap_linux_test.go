@@ -133,8 +133,9 @@ func TestRestrictThreadKeeps(t *testing.T) {
 	if k.setData[0].Permitted != 0xBBBB0002 || k.setData[0].Effective != 0xAAAA0001 || k.setData[1].Permitted != 0x3F || k.setData[1].Effective != 0x1F {
 		t.Errorf("permitted or effective changed: %+v", k.setData)
 	}
-	// NOROOT | NOROOT_LOCKED | NO_SETUID_FIXUP | NO_SETUID_FIXUP_LOCKED.
-	if k.secbits != 0xF {
+	// NOROOT | NOROOT_LOCKED, and not NO_SETUID_FIXUP: the child's setuid must
+	// empty its effective set.
+	if k.secbits != 0x3 {
 		t.Errorf("securebits %#x", k.secbits)
 	}
 }

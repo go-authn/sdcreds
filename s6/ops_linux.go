@@ -333,11 +333,13 @@ func prctl(option, arg2 uintptr) (uintptr, error) {
 //     set, which keep is). An ambient capability must be in both the permitted
 //     and the inheritable set (prctl(2), PR_CAP_AMBIENT_RAISE), and the
 //     inheritable set passes through exec unchanged, so it is exactly keep.
-//  4. The securebits NOROOT and NO_SETUID_FIXUP are set and locked
-//     (PR_SET_SECUREBITS, capabilities(7) "The securebits flag"), and a child
-//     inherits them across fork and exec: the service can never turn them off
-//     (the _LOCKED bits are irrevocable), so a uid 0 it might later reach gets
-//     no capability from being root, and a setuid() of its own changes none.
+//  4. The securebit NOROOT is set and locked (PR_SET_SECUREBITS,
+//     capabilities(7) "The securebits flag"), and a child inherits it across
+//     fork and exec: the service can never turn it off (the _LOCKED bit is
+//     irrevocable), so a uid 0 it might later reach gets no capability from
+//     being root. NO_SETUID_FIXUP is left clear (see secbitsLocked), so that the
+//     child's effective set is emptied by its setuid and a service started
+//     with a kept capability cannot read a root-only file before its exec.
 //
 // The child's own part is SysProcAttr.AmbientCaps (see launch). Go's child sets
 // SECBIT_KEEP_CAPS before it changes uid, so the permitted set survives
@@ -402,12 +404,17 @@ func setInheritable(keep []Cap) error {
 
 // The securebits of prctl(2) PR_SET_SECUREBITS (linux/securebits.h).
 const (
-	secbitNoRoot        = 1 << 0
-	secbitNoRootLocked  = 1 << 1
-	secbitNoSetuidFixup = 1 << 2
-	secbitNoFixupLocked = 1 << 3
+	secbitNoRoot       = 1 << 0
+	secbitNoRootLocked = 1 << 1
 	// secbitsLocked is what a service with kept capabilities runs under. Not
 	// KEEP_CAPS: Go's child sets that itself around its setuid, and it is
-	// cleared by execve(2) whatever is asked here.
-	secbitsLocked = secbitNoRoot | secbitNoRootLocked | secbitNoSetuidFixup | secbitNoFixupLocked
+	// cleared by execve(2) whatever is asked here. Not NO_SETUID_FIXUP either,
+	// on purpose: with it the child would keep its whole EFFECTIVE set under the
+	// service uid from the setuid until the execve (capabilities(7), "Effect of
+	// user ID changes on capabilities"), able to open a root-only file; without
+	// it the kernel clears the effective set at the setuid (KEEP_CAPS keeps the
+	// permitted one), and the ambient set restores exactly the kept set at the
+	// exec. The service cannot change its uid without CAP_SETUID, which is not
+	// on the allowlist, so the fixup rules never apply to it.
+	secbitsLocked = secbitNoRoot | secbitNoRootLocked
 )

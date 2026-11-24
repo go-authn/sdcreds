@@ -80,6 +80,19 @@ func CheckKeepCaps(keep []Cap) error {
 	return nil
 }
 
+// asciiUpper upper-cases the ASCII letters of s and nothing else. Unicode case
+// folding would let a dotless "ı" or the Kelvin sign spell an ASCII letter, so a
+// name with any non-ASCII byte is left as it is and matches no capability.
+func asciiUpper(s string) string {
+	b := []byte(s)
+	for i, c := range b {
+		if c >= 'a' && c <= 'z' {
+			b[i] = c - 'a' + 'A'
+		}
+	}
+	return string(b)
+}
+
 // ParseKeepCaps turns the values of a repeatable, comma-separated --keep-cap
 // into a sorted set without duplicates. The names are those of capabilities(7),
 // written in full (CAP_NET_ADMIN). A name that is not a capability is an error,
@@ -89,7 +102,7 @@ func ParseKeepCaps(values []string) ([]Cap, error) {
 	var out []Cap
 	for _, v := range values {
 		for _, name := range strings.Split(v, ",") {
-			name = strings.ToUpper(strings.TrimSpace(name))
+			name = asciiUpper(strings.TrimSpace(name))
 			i := slices.Index(capNames[:], name)
 			if i < 0 {
 				return nil, fmt.Errorf("s6: %q is not a capability; the allowlist is %s", name, allowlist())

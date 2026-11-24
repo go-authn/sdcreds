@@ -90,6 +90,10 @@ func TestParseKeepCapsRefusals(t *testing.T) {
 		"empty value":               {[]string{""}, `"" is not a capability`},
 		"trailing comma":            {[]string{"CAP_NET_ADMIN,"}, `"" is not a capability`},
 		"unknown after good repeat": {[]string{"CAP_NET_ADMIN", "CAP_BOGUS"}, `"CAP_BOGUS" is not a capability`},
+		// Unicode case folding would read the dotless i as an I.
+		"dotless i":        {[]string{"cap_net_admın"}, `is not a capability`},
+		"dotless i, upper": {[]string{"CAP_NET_BIND_SERVıCE"}, `is not a capability`},
+		"long s":           {[]string{"cap_net_admin,cap_ſys_admin"}, `is not a capability`},
 	} {
 		got, err := ParseKeepCaps(tc.in)
 		if err == nil || got != nil || !strings.Contains(err.Error(), tc.part) || !strings.Contains(err.Error(), list) {

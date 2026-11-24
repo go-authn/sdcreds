@@ -134,9 +134,13 @@ anything is decrypted or anything is mounted.
 The service then has, in its bounding, permitted, inheritable, effective and
 ambient sets, exactly the kept capabilities and nothing else. `no_new_privs`
 stays on, so a set-user-id or file-capability program it runs gains nothing, and
-the securebits `SECBIT_NOROOT` and `SECBIT_NO_SETUID_FIXUP` are set and locked
-(`SECBIT_NOROOT_LOCKED`, `SECBIT_NO_SETUID_FIXUP_LOCKED`): the service cannot
-unlock them, and reaching uid 0 would give it nothing. The order is the one of
+the securebit `SECBIT_NOROOT` is set and locked (`SECBIT_NOROOT_LOCKED`): the
+service cannot unlock it, and reaching uid 0 would give it nothing.
+`SECBIT_NO_SETUID_FIXUP` is deliberately not set: with it the child would keep
+its whole effective set under the service uid until its `execve` and could open
+a root-only file, whereas without it the change of uid empties the effective
+set and the ambient set gives back exactly the kept set at the `execve`. The
+order is the one of
 capabilities(7) and prctl(2): `no_new_privs`, the bounding set cut to the kept
 set, the inheritable set, the securebits, then in the child `SECBIT_KEEP_CAPS`
 across the change of uid, and the ambient raise. `s6-run`'s own privileges are
@@ -156,9 +160,13 @@ unchanged; the interop test reads `/proc/self/status` of the service and of
   stay root. `s6-run` started inside a chroot starts the service in that chroot.
 * The service has no capability unless `--keep-cap` names one of the seven of the
   allowlist above. A kept capability is a privilege of the service and the
-  operator's decision; `CAP_NET_ADMIN`, for one, lets the service change the
-  network of its namespace (so run such a service in its own network namespace if
-  that matters), and `CAP_NET_RAW` lets it read and forge packets there. None
+  operator's decision; `CAP_NET_ADMIN`, for one, acts on the network namespace
+  the service runs in, which is the HOST's unless the service is started in a
+  network namespace of its own (`--unshare` only gives it a private mount
+  namespace): there it can change interfaces, routes and the firewall, and write
+  host-wide network settings such as `ip_unprivileged_port_start`. `CAP_NET_RAW`
+  lets it read and forge packets in that namespace. Run such a service in its
+  own network namespace when that matters. None
   adds any access to the credential file system (read-only, and the service user
   already owns it) or any way to signal or ptrace `s6-run`.
 * A `TERM` (or any forwarded signal) is held by `s6-run` from before the first

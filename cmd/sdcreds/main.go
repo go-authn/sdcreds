@@ -459,7 +459,7 @@ func (f *s6Flags) register(cmd *cobra.Command, run bool) {
 		fl.BoolVar(&f.unshare, "unshare", true, "give this process a private mount namespace (the mount then dies with the service)")
 		fl.StringArrayVar(&f.keepCap, "keep-cap", nil, "capability the command keeps (repeatable, or comma-separated); default none, so it runs with an empty capability set. "+
 			"Allowlist only: CAP_NET_ADMIN, CAP_NET_BIND_SERVICE, CAP_NET_RAW, CAP_NET_BROADCAST, CAP_IPC_LOCK, CAP_WAKE_ALARM, CAP_BLOCK_SUSPEND. "+
-			"The kept set is the whole bounding, permitted, inheritable and ambient set of the command; no_new_privs stays on and the securebits NOROOT and NO_SETUID_FIXUP are locked")
+			"The kept set is the whole bounding, permitted, inheritable and ambient set of the command; no_new_privs stays on and the securebit NOROOT is locked. NET_ADMIN acts on the network namespace the command runs in, the host's unless it has one of its own")
 		_ = cmd.MarkFlagRequired("user")
 		_ = cmd.MarkFlagRequired("source")
 	}

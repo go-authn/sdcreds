@@ -71,7 +71,7 @@ func capMask(caps ...uint) string {
 // in the interop container started with --privileged.
 func TestS6KeepCapAsRoot(t *testing.T) {
 	r, _, probe := probeRig(t)
-	const locked = "0xf" // NOROOT, NOROOT_LOCKED, NO_SETUID_FIXUP, NO_SETUID_FIXUP_LOCKED
+	const locked = "0x3" // NOROOT, NOROOT_LOCKED
 	for name, tc := range map[string]struct {
 		flags []string
 		caps  []uint
@@ -102,7 +102,7 @@ func TestS6KeepCapAsRoot(t *testing.T) {
 				t.Errorf("%s: NoNewPrivs %q", name, got["NoNewPrivs"])
 			}
 			if !strings.HasPrefix(got["securebits"], locked+" ") {
-				t.Errorf("%s: securebits %q, want %s: NOROOT and NO_SETUID_FIXUP, locked", name, got["securebits"], locked)
+				t.Errorf("%s: securebits %q, want %s: NOROOT, locked", name, got["securebits"], locked)
 			}
 			// The service is still the service user, and cannot undo any of it.
 			if got["Uid"] != "1000\t1000\t1000\t1000" || got["Gid"] != "1000\t1000\t1000\t1000" {

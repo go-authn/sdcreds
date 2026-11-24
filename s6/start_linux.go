@@ -61,6 +61,11 @@ func startWith(sigs <-chan os.Signal, stop func(), u User, argv, env []string) (
 			close(fin)
 		}
 	}()
+	// The library refuses what the command line refuses: a capability that is
+	// not on the allowlist is never handed to a service, whoever calls Start.
+	if err := CheckKeepCaps(u.Keep); err != nil {
+		return nil, err
+	}
 	path, err := exec.LookPath(argv[0])
 	if err != nil {
 		return nil, err
