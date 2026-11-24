@@ -15,6 +15,24 @@ import (
 	"unsafe"
 )
 
+// Seams for the tests: the failures of these calls cannot be provoked on a
+// real system, and what each caller does with them (return the error, leave
+// nothing mounted, restore the thread) is the point of the tests.
+var (
+	userLookup    = user.Lookup
+	groupIDs      = func(u *user.User) ([]string, error) { return u.GroupIds() }
+	sysUnshare    = syscall.Unshare
+	sysMount      = syscall.Mount
+	sysUnmount    = syscall.Unmount
+	sysAccess     = syscall.Access
+	sysGetgroups  = syscall.Getgroups
+	sysRaw        = syscall.RawSyscall
+	sysRaw6       = syscall.RawSyscall6
+	prctlCall     = prctl
+	sysStatfs     = syscall.Statfs
+	mountinfoPath = "/proc/thread-self/mountinfo"
+)
+
 // msNoSymFollow is MS_NOSYMFOLLOW (linux/mount.h), absent from package syscall.
 const msNoSymFollow = 1 << 8
 
@@ -42,7 +60,7 @@ func Real() Ops {
 // static build) that reads /etc/passwd and /etc/group only, with no NSS: the
 // supplementary groups that LDAP or SSSD would give are then missing.
 func lookupUser(name string) (User, error) {
-	u, err := user.Lookup(name)
+	u, err := userLookup(name)
 	if err != nil {
 		return User{}, err
 	}
@@ -55,7 +73,7 @@ func lookupUser(name string) (User, error) {
 		return User{}, err
 	}
 	out := User{UID: uid, GID: gid}
-	ids, err := u.GroupIds()
+	ids, err := groupIDs(u)
 	if err != nil {
 		return User{}, err
 	}
@@ -72,10 +90,10 @@ func lookupUser(name string) (User, error) {
 // unshare moves this thread into a new mount namespace whose mounts do not
 // propagate back to the host.
 func unshare() error {
-	if err := syscall.Unshare(syscall.CLONE_NEWNS); err != nil {
+	if err := sysUnshare(syscall.CLONE_NEWNS); err != nil {
 		return err
 	}
-	return syscall.Mount("", "/", "", syscall.MS_REC|syscall.MS_PRIVATE, "")
+	return sysMount("", "/", "", syscall.MS_REC|syscall.MS_PRIVATE, "")
 }
 
 // mountRAM mounts a tmpfs that never swaps (noswap, Linux 6.4), sized for the
@@ -89,17 +107,12 @@ func mountRAM(dir string) error {
 	defer release()
 	data := fmt.Sprintf("noswap,mode=0700,size=%d,nr_inodes=%d", MaxTotal+(1<<20), MaxEntries+16)
 	// The file-system name is the marker of the mounts of this package.
-	err = syscall.Mount(MountTag, target, "tmpfs", hardening, data)
-	if err == nil {
-		return nil
-	}
-	if !errors.Is(err, syscall.EINVAL) {
+	// Success, or a refusal that is final; only EINVAL (no noswap) tries the ramfs.
+	if err := sysMount(MountTag, target, "tmpfs", hardening, data); !errors.Is(err, syscall.EINVAL) {
 		return err
 	}
-	return syscall.Mount(MountTag, target, "ramfs", hardening, "mode=0700")
+	return sysMount(MountTag, target, "ramfs", hardening, "mode=0700")
 }
-
-const threadMountinfo = "/proc/thread-self/mountinfo"
 
 // mountSource reads the mount table of the calling thread for dir. Not
 // /proc/self/mountinfo: that is the table of the thread-group leader, and Run
@@ -109,7 +122,7 @@ func mountSource(dir string) (string, bool, error) {
 	if err != nil {
 		return "", false, err
 	}
-	table, err := os.ReadFile(threadMountinfo)
+	table, err := os.ReadFile(mountinfoPath)
 	if err != nil {
 		return "", false, err
 	}
@@ -121,7 +134,7 @@ func mountSource(dir string) (string, bool, error) {
 // Setresuid is): the thread that checks execution runs as the user for the
 // length of the check and is restored.
 func setThreadIDs(u User) (restore func() error, err error) {
-	prev, err := syscall.Getgroups()
+	prev, err := sysGetgroups()
 	if err != nil {
 		return func() error { return nil }, err
 	}
@@ -152,7 +165,7 @@ func setThreadIDs(u User) (restore func() error, err error) {
 // rawSetres sets the real and effective id of the calling thread to id and the
 // saved id to saved (0 lets the thread go back to root).
 func rawSetres(trap uintptr, id, saved int) error {
-	if _, _, e := syscall.RawSyscall(trap, uintptr(id), uintptr(id), uintptr(saved)); e != 0 {
+	if _, _, e := sysRaw(trap, uintptr(id), uintptr(id), uintptr(saved)); e != 0 {
 		return e
 	}
 	return nil
@@ -167,7 +180,7 @@ func rawSetgroups(g []int) error {
 	if len(ids) > 0 {
 		p = unsafe.Pointer(&ids[0])
 	}
-	if _, _, e := syscall.RawSyscall(trapSetgroups, uintptr(len(ids)), uintptr(p), 0); e != 0 {
+	if _, _, e := sysRaw(trapSetgroups, uintptr(len(ids)), uintptr(p), 0); e != 0 {
 		return e
 	}
 	return nil
@@ -182,7 +195,7 @@ func canExec(path string, u User) error {
 	restore, err := setThreadIDs(u)
 	var aerr error
 	if err == nil {
-		aerr = syscall.Access(path, 1) // X_OK, by the real id, which is u's now
+		aerr = sysAccess(path, 1) // X_OK, by the real id, which is u's now
 	}
 	if rerr := restore(); rerr != nil {
 		return fmt.Errorf("could not restore the privileges of the thread: %w", rerr)
@@ -195,13 +208,10 @@ func canExec(path string, u User) error {
 		return aerr
 	}
 	st, err := os.Stat(path)
-	if err != nil {
-		return err
-	}
-	if !st.Mode().IsRegular() {
+	if err == nil && !st.Mode().IsRegular() {
 		return fmt.Errorf("%s is not a regular file", path)
 	}
-	return nil
+	return err
 }
 
 func remountRO(dir string) error {
@@ -210,7 +220,7 @@ func remountRO(dir string) error {
 		return err
 	}
 	defer release()
-	return syscall.Mount("", target, "", syscall.MS_REMOUNT|syscall.MS_RDONLY|hardening, "")
+	return sysMount("", target, "", syscall.MS_REMOUNT|syscall.MS_RDONLY|hardening, "")
 }
 
 // oPath is O_PATH (0o10000000 on every Linux architecture, asm-generic and x86
@@ -223,7 +233,7 @@ const oPath = 0o10000000
 func pin(dir string) (path string, release func(), err error) {
 	fd, err := syscall.Open(dir, oPath|syscall.O_NOFOLLOW|syscall.O_DIRECTORY|syscall.O_CLOEXEC, 0)
 	if err != nil {
-		return "", nil, &os.PathError{Op: "open", Path: dir, Err: err}
+		return "", func() {}, &os.PathError{Op: "open", Path: dir, Err: err}
 	}
 	return "/proc/self/fd/" + strconv.Itoa(fd), func() { syscall.Close(fd) }, nil
 }
@@ -242,7 +252,7 @@ func move(src, dst string) error {
 		return err
 	}
 	defer releaseD()
-	if err := syscall.Mount(s, d, "", syscall.MS_BIND, ""); err != nil {
+	if err := sysMount(s, d, "", syscall.MS_BIND, ""); err != nil {
 		return err
 	}
 	return unmount(src)
@@ -252,7 +262,7 @@ func move(src, dst string) error {
 const umountNoFollow = 0x8
 
 func unmount(dir string) error {
-	err := syscall.Unmount(dir, syscall.MNT_DETACH|umountNoFollow)
+	err := sysUnmount(dir, syscall.MNT_DETACH|umountNoFollow)
 	if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOENT) {
 		return ErrNotMounted
 	}
@@ -262,7 +272,7 @@ func unmount(dir string) error {
 // fsType names the file system at dir, by the magic numbers of statfs(2).
 func fsType(dir string) (string, error) {
 	var st syscall.Statfs_t
-	if err := syscall.Statfs(dir, &st); err != nil {
+	if err := sysStatfs(dir, &st); err != nil {
 		return "", &os.PathError{Op: "statfs", Path: dir, Err: err}
 	}
 	switch uint32(st.Type) {
@@ -283,7 +293,7 @@ const (
 )
 
 func prctl(option, arg2 uintptr) (uintptr, error) {
-	r, _, errno := syscall.RawSyscall6(syscall.SYS_PRCTL, option, arg2, 0, 0, 0, 0)
+	r, _, errno := sysRaw6(syscall.SYS_PRCTL, option, arg2, 0, 0, 0, 0)
 	if errno != 0 {
 		return 0, errno
 	}
@@ -298,17 +308,17 @@ func prctl(option, arg2 uintptr) (uintptr, error) {
 // child alone takes the identity of the service (SysProcAttr.Credential), so no
 // thread of the parent carries ids the service could act through.
 func restrictThread() error {
-	if _, err := prctl(prSetNoNewPrivs, 1); err != nil {
+	if _, err := prctlCall(prSetNoNewPrivs, 1); err != nil {
 		return fmt.Errorf("no_new_privs: %w", err)
 	}
 	for c := uintptr(0); c <= capLastCapMax; c++ {
-		if _, err := prctl(prCapbsetRead, c); err != nil {
+		if _, err := prctlCall(prCapbsetRead, c); err != nil {
 			if errors.Is(err, syscall.EINVAL) {
 				break // past the last capability of this kernel
 			}
 			return fmt.Errorf("capability bounding set: %w", err)
 		}
-		if _, err := prctl(prCapbsetDrop, c); err != nil {
+		if _, err := prctlCall(prCapbsetDrop, c); err != nil {
 			return fmt.Errorf("capability bounding set: %w", err)
 		}
 	}
