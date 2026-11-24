@@ -148,12 +148,33 @@ func (f HostKeyFile) HostKey() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	return bindToMachine(raw, mid, path)
+}
+
+// bindToMachine checks the machine id prefix of a whole host secret and returns
+// the key part; the secret is wiped when it belongs to another machine.
+func bindToMachine(raw []byte, mid [16]byte, path string) ([]byte, error) {
 	want := HostSecretMachineID(mid)
 	if !hmac.Equal(raw[:16], want[:]) {
 		clear(raw)
 		return nil, fmt.Errorf("%w: %s", ErrHostKeyMachine, path)
 	}
 	return raw[16:], nil
+}
+
+// HostKeyFromFile reads the host secret from an already open file, with the
+// checks of HostKey, and never opens a path: a caller that has judged the
+// descriptor gets the bytes of that same file. The result is a private copy.
+// machineID must not be null.
+func HostKeyFromFile(f *os.File, machineID [16]byte) ([]byte, error) {
+	if machineID == ([16]byte{}) {
+		return nil, fmt.Errorf("%w: machine id is null", ErrInvalid)
+	}
+	raw, err := readHostSecretFile(f)
+	if err != nil {
+		return nil, err
+	}
+	return bindToMachine(raw, machineID, f.Name())
 }
 
 // ephemeralKey marks a HostKeySource whose HostKey result is a private copy

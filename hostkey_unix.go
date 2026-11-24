@@ -40,7 +40,13 @@ func readHostSecret(path string) ([]byte, error) {
 		return nil, err
 	}
 	defer f.Close()
+	return readHostSecretFile(f)
+}
 
+// readHostSecretFile judges and reads an open host secret, from the descriptor
+// alone: nothing here opens a path (f.Name() is only used in messages).
+func readHostSecretFile(f *os.File) ([]byte, error) {
+	path := f.Name()
 	fi, err := f.Stat()
 	if err != nil {
 		return nil, err
@@ -69,7 +75,8 @@ func readHostSecret(path string) ([]byte, error) {
 		return nil, fmt.Errorf("sdcreds: %s is too big, refusing: %w", path, ErrTooLarge)
 	}
 	buf := make([]byte, size+1)
-	n, err := readFull(f, buf)
+	// From offset 0 whatever the position of the descriptor is.
+	n, err := readFull(io.NewSectionReader(f, 0, size+1), buf)
 	if err != nil && err != io.ErrUnexpectedEOF {
 		clear(buf)
 		return nil, &os.PathError{Op: "read", Path: path, Err: err}

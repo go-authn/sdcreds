@@ -132,14 +132,6 @@ func judgeTrusted(path string, st os.FileInfo) error {
 	return nil
 }
 
-func checkTrusted(path string) error {
-	f, err := openTrusted(path)
-	if err != nil {
-		return err
-	}
-	return f.Close()
-}
-
 // readTrustedMachineID reads a machine id from a file that openTrusted accepts.
 func readTrustedMachineID(path string) ([16]byte, error) {
 	f, err := openTrusted(path)

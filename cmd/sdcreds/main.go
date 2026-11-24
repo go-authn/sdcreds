@@ -407,25 +407,42 @@ type s6Flags struct {
 // s6HostKey is the host key of the privileged s6-run path: the default files
 // unless a flag names others, and a file named by a flag must be a regular file
 // owned by root (trustedUID) that group and others cannot write. The
-// environment plays no part.
-func s6HostKey(secret, machineID string) (sdcreds.HostKeyFile, error) {
-	if secret == "" {
-		secret = sdcreds.DefaultHostSecretPath
-	} else if err := checkTrusted(secret); err != nil {
-		return sdcreds.HostKeyFile{}, fmt.Errorf("--secret: %w", err)
+// environment plays no part. A file named by --secret is opened once: the
+// descriptor that was judged is the one the key is read from, and the path is
+// never opened again. wipe overwrites that key; call it when the credentials
+// have been decrypted.
+func s6HostKey(secret, machineID string) (key sdcreds.HostKeySource, wipe func(), err error) {
+	wipe = func() {}
+	var f *os.File
+	if secret != "" {
+		if f, err = openTrusted(secret); err != nil {
+			return nil, wipe, fmt.Errorf("--secret: %w", err)
+		}
+		defer f.Close()
+		afterSecretJudged(secret)
 	}
 	var mid [16]byte
-	var err error
 	if machineID == "" {
 		mid, err = sdcreds.ReadMachineID(sdcreds.MachineIDPath)
 	} else {
 		mid, err = readTrustedMachineID(machineID)
 	}
 	if err != nil {
-		return sdcreds.HostKeyFile{}, err
+		return nil, wipe, err
 	}
-	return sdcreds.HostKeyFile{Path: secret, MachineID: mid}, nil
+	if f == nil {
+		return sdcreds.HostKeyFile{Path: sdcreds.DefaultHostSecretPath, MachineID: mid}, wipe, nil
+	}
+	k, err := sdcreds.HostKeyFromFile(f, mid)
+	if err != nil {
+		return nil, wipe, fmt.Errorf("--secret: %w", err)
+	}
+	return sdcreds.StaticHostKey(k), func() { clear(k) }, nil
 }
+
+// afterSecretJudged runs once the --secret descriptor is judged and before it
+// is read; a seam for the tests, which swap the path there.
+var afterSecretJudged = func(string) {}
 
 func (f *s6Flags) register(cmd *cobra.Command, run bool) {
 	fl := cmd.Flags()
@@ -447,6 +464,9 @@ func (f *s6Flags) register(cmd *cobra.Command, run bool) {
 // s6Ops is replaced by the tests.
 var s6Ops = s6.Real
 
+// s6Run is replaced by the tests.
+var s6Run = s6.Run
+
 func s6RunCmd() *cobra.Command {
 	var f s6Flags
 	cmd := &cobra.Command{
@@ -459,11 +479,10 @@ func s6RunCmd() *cobra.Command {
 			// privileges, in front of a service. SYSTEMD_CREDENTIAL_SECRET and
 			// SDCREDS_MACHINE_ID_FILE are ignored; --secret and --machine-id-file
 			// are the only overrides and name root-owned files.
-			var hk sdcreds.HostKeySource
-			if k, err := s6HostKey(f.secret, f.machineIDFile); err != nil {
-				hk = failingKey{err}
-			} else {
-				hk = k
+			hk, wipe, kerr := s6HostKey(f.secret, f.machineIDFile)
+			defer wipe()
+			if kerr != nil {
+				hk = failingKey{kerr}
 			}
 			c := s6.Config{
 				Service: f.service, User: f.user, BaseDir: f.baseDir, Source: f.source,
@@ -482,7 +501,7 @@ func s6RunCmd() *cobra.Command {
 				},
 			}
 			// s6 supervises this process: its exit status is the service's.
-			err := s6.Run(c, s6Ops())
+			err := s6Run(c, s6Ops())
 			var ee *s6.ExitError
 			if errors.As(err, &ee) {
 				osExit(ee.Code)

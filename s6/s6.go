@@ -11,6 +11,8 @@
 package s6
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -277,9 +279,19 @@ func Run(c Config, ops Ops) (err error) {
 		return err
 	}
 	defer wipe(creds)
-	// Registered before the clean-up below, so it runs after it.
-	releaseSignals := func() {}
-	defer func() { releaseSignals() }()
+	// From here, before anything is staged or mounted, until the clean-up below
+	// is over, a signal is not allowed to end this process: it would leave the
+	// plaintext mounted. Registered before the clean-up, so released after it.
+	// A signal that arrives before the service runs is acted on once everything
+	// is taken away: Run then returns the status of a process killed by it.
+	releaseSignals, caught := holdSignals()
+	defer releaseSignals()
+	interrupted := func() error {
+		if sig := caught(); sig != 0 {
+			return &ExitError{Code: 128 + sig}
+		}
+		return nil
+	}
 
 	// The mount namespace belongs to this thread; Start gives it to the thread
 	// that starts the service.
@@ -319,7 +331,7 @@ func Run(c Config, ops Ops) (err error) {
 	// The credentials are written and frozen in a staging mount that sits under
 	// a directory only root can enter, then moved to dir: until then no process
 	// of the service user can reach them, let alone change them.
-	stageRoot, err := mkdirTemp(c.BaseDir, ".stage-")
+	stageRoot, err := mkdirTemp(c.BaseDir, stagePrefix(c.Service))
 	if err != nil {
 		return err
 	}
@@ -353,6 +365,9 @@ func Run(c Config, ops Ops) (err error) {
 		}
 	}()
 	if err := mkdir(stage, 0o700); err != nil {
+		return err
+	}
+	if err := interrupted(); err != nil {
 		return err
 	}
 	if err := ops.MountRAM(stage); err != nil {
@@ -413,11 +428,14 @@ func Run(c Config, ops Ops) (err error) {
 	// This process keeps its privileges and its mount; the service runs in a
 	// child that drops them. A failure to exec is reported by Start, so the
 	// credentials are taken away below before Run fails.
+	// A signal that came while the credentials were being staged stops the run
+	// here: the service has not started, there is nothing to forward it to.
+	if err := interrupted(); err != nil {
+		return err
+	}
+	// While the service runs, Start forwards the signals to it; held as they
+	// are, a second TERM during the clean-up cannot leave the mount behind.
 	wait, err := ops.Start(u, c.Command, env)
-	// From here until the credentials are gone a signal is not allowed to end
-	// this process (Start forwarded it to the service while it ran): a second
-	// TERM during the clean-up must not leave the mount behind.
-	releaseSignals = holdSignals()
 	if err != nil {
 		return fmt.Errorf("s6: start %s: %w", c.Command[0], err)
 	}
@@ -509,6 +527,47 @@ func unmountAll(ops Ops, dir string) error {
 	return fmt.Errorf("%s is still mounted after %d unmounts", dir, maxLayers)
 }
 
+// stagePrefix starts the name of the staging directory of a service under the
+// base: a fixed-length digest of the name, so that a service never sweeps the
+// staging of another (a name cannot hold ':', a digest cannot be a prefix of a
+// longer one, and a name of NameMax bytes still fits).
+func stagePrefix(service string) string {
+	sum := sha256.Sum256([]byte(service))
+	return ".stage-" + hex.EncodeToString(sum[:8]) + "-"
+}
+
+// sweepStages takes away what a run of service left in its staging
+// directories under base: the mount at <stage>/mnt, when this package made it,
+// then the directory. A directory of another name, a symbolic link, and a mount
+// that sdcreds did not make are left alone (the last is an error, as it is for
+// the credential directory itself). It is idempotent.
+func sweepStages(service, base string, ops Ops) error {
+	ents, err := os.ReadDir(base)
+	if err != nil {
+		return fmt.Errorf("s6: %w", err)
+	}
+	prefix := stagePrefix(service)
+	for _, e := range ents {
+		if !strings.HasPrefix(e.Name(), prefix) {
+			continue
+		}
+		root := filepath.Join(base, e.Name())
+		if err := requireDir(root); err != nil {
+			return err
+		}
+		mnt := filepath.Join(root, "mnt")
+		if err := unmountAll(ops, mnt); err != nil {
+			return fmt.Errorf("s6: unmount %s: %w", mnt, err)
+		}
+		for _, p := range []string{mnt, root} {
+			if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("s6: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
 // Finish releases the credentials of a service: the mount goes (lazily, so a
 // process still holding a file keeps a private copy until it exits) and the
 // empty directory is removed. It is idempotent.
@@ -521,6 +580,10 @@ func Finish(service, base string, ops Ops) error {
 		return nil
 	}
 	if err := checkBase(base); err != nil {
+		return err
+	}
+	// A run that was ended while it staged leaves its staging mount behind.
+	if err := sweepStages(service, base, ops); err != nil {
 		return err
 	}
 	if _, err := os.Lstat(dir); errors.Is(err, os.ErrNotExist) {

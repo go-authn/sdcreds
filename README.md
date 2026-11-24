@@ -108,11 +108,20 @@ Linux only; elsewhere the commands report `ErrUnsupported`.
 * The key files named by `--secret` and `--machine-id-file` must be root-owned
   and not writable by group or others, and so must every directory above them up
   to `/` (a symbolic link in the path is resolved, and the directories it leads
-  to are judged the same way).
+  to are judged the same way). The key file is opened once, without following a
+  final link: the descriptor that was judged is the one the key is read from, and
+  the path is never opened again by name. The key is wiped from the memory of
+  `s6-run` when it is done with the credentials.
 * Only the child takes the identity of the service; `s6-run` and all its threads
   stay root. `s6-run` started inside a chroot starts the service in that chroot.
-* A second `TERM` (or any forwarded signal) while `s6-run` takes the credentials
-  away does not end it before the unmount. The plaintext is wiped from the memory
+* A `TERM` (or any forwarded signal) is held by `s6-run` from before the first
+  mount until the credentials are gone: one that comes while they are staged
+  stops the run, with the status of a process killed by it, before the service
+  starts and after the staging mount is detached and removed; one that comes
+  while `s6-run` takes the credentials away does not end it before the unmount.
+  `sdcreds s6-finish` also detaches and removes a staging mount (named `sdcreds`)
+  that an earlier run left under the base directory; it never touches a staging
+  directory of another service or a mount of another name. The plaintext is wiped from the memory
   of `s6-run` as soon as it is in the file system, before the service starts.
 * With `--unshare=false` the mount lives in the namespace of the host: a `SIGKILL`
   of `s6-run` (which cannot be caught) leaves the mount in place, and it stays

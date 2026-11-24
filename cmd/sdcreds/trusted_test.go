@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -271,25 +272,114 @@ func TestOpenTrustedRefusals(t *testing.T) {
 	}
 }
 
+// checkTrusted judges a key file the way s6-run does and says nothing else.
+func checkTrusted(path string) error {
+	f, err := openTrusted(path)
+	if err != nil {
+		return err
+	}
+	return f.Close()
+}
+
 func TestS6HostKey(t *testing.T) {
 	_, _, secret, mid := hostSealed(t)
 	asOwner(t, uint32(os.Getuid()))
-	k, err := s6HostKey(secret, mid)
-	if err != nil || k.Path != secret || k.MachineID == ([16]byte{}) {
-		t.Errorf("%+v %v", k, err)
+	k, wipe, err := s6HostKey(secret, mid)
+	want, _ := os.ReadFile(secret)
+	got, _ := k.HostKey()
+	if err != nil || len(want) < 17 || !bytes.Equal(got, want[16:]) {
+		t.Fatalf("%v: key %x", err, got)
+	}
+	// wipe overwrites the key it handed out.
+	wipe()
+	if !bytes.Equal(got, make([]byte, len(got))) {
+		t.Error("the key was not wiped")
 	}
 	// Nothing in the environment reaches the default files: a different
 	// secret in the environment changes nothing.
 	t.Setenv(sdcreds.HostSecretEnv, filepath.Join(t.TempDir(), "other"))
 	t.Setenv(MachineIDEnv, filepath.Join(t.TempDir(), "other"))
-	k, _ = s6HostKey("", mid)
-	if k.Path != sdcreds.DefaultHostSecretPath {
-		t.Errorf("secret path %q", k.Path)
+	d, wipe, _ := s6HostKey("", mid)
+	wipe()
+	if f, ok := d.(sdcreds.HostKeyFile); !ok || f.Path != sdcreds.DefaultHostSecretPath || f.MachineID == ([16]byte{}) {
+		t.Errorf("default key source %+v", d)
 	}
 	// A machine id that is not 32 hex digits is refused.
 	short := filepath.Join(filepath.Dir(mid), "short-id")
 	os.WriteFile(short, []byte("abcd\n"), 0o444)
-	if _, err := s6HostKey(secret, short); !errors.Is(err, sdcreds.ErrInvalid) {
+	if _, _, err := s6HostKey(secret, short); !errors.Is(err, sdcreds.ErrInvalid) {
 		t.Errorf("%v", err)
+	}
+	if _, _, err := s6HostKey("", short); !errors.Is(err, sdcreds.ErrInvalid) {
+		t.Errorf("default secret: %v", err)
+	}
+	// A secret judged fit but refused by the library (mode 0444, not 0400) says
+	// --secret, and no key comes back.
+	loose := filepath.Join(filepath.Dir(secret), "loose")
+	os.WriteFile(loose, want, 0o444)
+	if k, _, err := s6HostKey(loose, mid); err == nil || k != nil || !strings.Contains(err.Error(), "--secret") {
+		t.Errorf("loose secret: %v %v", k, err)
+	}
+}
+
+// The file that was judged is the file that is read. The path is swapped for
+// another host secret (a valid one, owned and moded alike) between the judgment
+// and the read; the key must still be the one of the file that was judged.
+func TestS6HostKeyIsReadFromTheJudgedDescriptor(t *testing.T) {
+	_, _, secret, mid := hostSealed(t)
+	asOwner(t, uint32(os.Getuid()))
+	judged, _ := os.ReadFile(secret)
+	other := bytes.Clone(judged)
+	for i := 16; i < len(other); i++ {
+		other[i] ^= 0xff
+	}
+	swapped := false
+	defer func(o func(string)) { afterSecretJudged = o }(afterSecretJudged)
+	afterSecretJudged = func(path string) {
+		if path != secret {
+			t.Errorf("seam called for %q", path)
+		}
+		// The judged file moves aside (so it keeps its one link), and another
+		// valid secret takes its name.
+		if err := os.Rename(path, path+".judged"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, other, 0o400); err != nil {
+			t.Fatal(err)
+		}
+		swapped = true
+	}
+	k, wipe, err := s6HostKey(secret, mid)
+	defer wipe()
+	if err != nil || !swapped {
+		t.Fatalf("swapped=%v: %v", swapped, err)
+	}
+	got, _ := k.HostKey()
+	if !bytes.Equal(got, judged[16:]) {
+		t.Error("the key was read from the path that replaced the judged file")
+	}
+	if now, _ := os.ReadFile(secret); !bytes.Equal(now, other) {
+		t.Error("control: the path was not swapped")
+	}
+}
+
+// s6-run wipes the host key once it is done: a credential cannot be opened with
+// the key afterwards.
+func TestS6RunWipesTheKeyAfterwards(t *testing.T) {
+	src, base, secret, mid := hostSealed(t)
+	asOwner(t, uint32(os.Getuid()))
+	withOps(t)
+	var cfg s6.Config
+	oldRun := s6Run
+	defer func() { s6Run = oldRun }()
+	s6Run = func(c s6.Config, o s6.Ops) error { cfg = c; return nil }
+	_, _, err := run(t, "", "s6-run", "--service=web", "--user=svc", "--base-dir="+base, "--source="+src,
+		"--secret="+secret, "--machine-id-file="+mid, "--", "/bin/web")
+	if err != nil || cfg.Decrypt == nil {
+		t.Fatalf("%v", err)
+	}
+	enc, _ := os.ReadFile(filepath.Join(src, "db"))
+	if _, err := cfg.Decrypt("db", enc); err == nil {
+		t.Error("the credential still opens: the key was not wiped when s6-run ended")
 	}
 }
