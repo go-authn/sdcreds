@@ -79,10 +79,19 @@ func deriveKey(id KeyID, src HostKeySource, scope *Scope) ([]byte, error) {
 		}
 		m := hmac.New(sha256.New, k)
 		m.Write(scopedHashData(s))
+		keyBuffer(k)
+		clear(k) // the unscoped hash is not the key and must not outlive this call
 		k = m.Sum(nil)
 	}
+	keyBuffer(k)
 	return k, nil
 }
+
+// keyBuffer is a seam for the tests: it sees each buffer deriveKey owns, to
+// assert that it is zero once the caller is done. The callers wipe the key
+// with defer clear as soon as the cipher is built. crypto/aes keeps its own
+// copy as a key schedule, which Go cannot wipe (see the README).
+var keyBuffer = func([]byte) {}
 
 // newGCM cannot fail: the key is a SHA-256 or HMAC-SHA256 output (32 bytes)
 // and Parse bounds the IV to 1..FieldMax bytes, which GCM accepts.
@@ -171,6 +180,7 @@ func Encrypt(plaintext []byte, o EncryptOptions) ([]byte, error) {
 		return nil, fmt.Errorf("sdcreds: failed to acquire a randomized IV: %w", err)
 	}
 	aead := newGCM(key, iv)
+	zero(key) // the cipher holds its own schedule; ours is not needed any more
 
 	// Header: id, sizes, IV, pad to 8, then the scoped flags for scoped types.
 	const fixed = 16 + 4*4
@@ -293,6 +303,7 @@ func Decrypt(blob []byte, o DecryptOptions) ([]byte, Metadata, error) {
 	}
 	defer zero(key)
 	aead := newGCM(key, h.IV)
+	zero(key) // the cipher holds its own schedule; ours is not needed any more
 	p := h.aadLen
 	pt, err := aead.Open(nil, h.IV, blob[p:], blob[:p])
 	if err != nil {

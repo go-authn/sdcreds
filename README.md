@@ -123,6 +123,11 @@ Linux only; elsewhere the commands report `ErrUnsupported`.
   that an earlier run left under the base directory; it never touches a staging
   directory of another service or a mount of another name. The plaintext is wiped from the memory
   of `s6-run` as soon as it is in the file system, before the service starts.
+* The AES key derived from the host key (and the unscoped hash a scoped key is
+  derived from) is wiped as soon as the cipher is built. `crypto/aes` keeps an
+  expanded key schedule inside the cipher, and the SHA-256 and HMAC states hold
+  key material while they live; Go gives no way to wipe either, so a copy of
+  the key stays in memory until the garbage collector reuses it.
 * With `--unshare=false` the mount lives in the namespace of the host: a `SIGKILL`
   of `s6-run` (which cannot be caught) leaves the mount in place, and it stays
   until `sdcreds s6-finish` runs (put it in the finish script of the service). The
