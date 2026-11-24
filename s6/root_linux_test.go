@@ -99,9 +99,7 @@ func TestTheRootDirectorySurvivesSetns(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(jail, "jail-marker"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(os.Args[0], "-test.run=^TestJailHelper$", "-test.v")
-	cmd.Env = append(os.Environ(), jailHelperEnv+"="+jail)
-	out, err := cmd.CombinedOutput()
+	out, err := helperOutput(t, append(os.Environ(), jailHelperEnv+"="+jail), "-test.run=^TestJailHelper$", "-test.v")
 	if err != nil || !strings.Contains(string(out), "--- PASS: TestJailHelper") {
 		t.Fatalf("%v\n%s", err, out)
 	}
@@ -169,7 +167,7 @@ func TestLaunchRefusals(t *testing.T) {
 		t.Errorf("a thread that cannot chroot: %v", err)
 	}
 	chroot = oldChroot
-	restrict = func() error { return errors.New("boom") }
+	restrict = func([]Cap) error { return errors.New("boom") }
 	if err := try(nil, rootDir, "/"); err == nil || !strings.Contains(err.Error(), "restrict") {
 		t.Errorf("a thread that cannot be restricted: %v", err)
 	}
@@ -177,6 +175,50 @@ func TestLaunchRefusals(t *testing.T) {
 	judgeChild = func(string, User) error { return errors.New("root left") }
 	if err := try(nil, rootDir, "/"); err == nil || !strings.Contains(err.Error(), "did not take the identity") {
 		t.Errorf("a child that kept root: %v", err)
+	}
+}
+
+// The library refuses what the command line refuses: Start with a capability
+// that is not on the allowlist starts nothing, root or not.
+func TestStartRefusesACapabilityOffTheAllowlist(t *testing.T) {
+	for _, keep := range [][]Cap{{21}, {CapNetAdmin, 21}, {-1}, {64}} {
+		var err error
+		var wait func() (int, error)
+		onThread(func() {
+			wait, err = start(User{UID: 12345, GID: 12345, Keep: keep}, []string{"/bin/true"}, nil)
+		})
+		if err == nil || wait != nil || !strings.Contains(err.Error(), "may not be kept") {
+			t.Errorf("Keep %v: wait=%v err=%v", keep, wait != nil, err)
+		}
+	}
+}
+
+// With a capability kept, the child must not be able to open a file that only
+// root can read between its change of uid and its exec: a kept capability is
+// in its permitted set from the setuid on, but its effective set is empty
+// until the ambient set restores exactly the kept set at the exec. A 0700
+// root:root program is therefore not started (EACCES at the exec), kept
+// capability or not. (That a program it may run has exactly the kept set is
+// checked by TestS6KeepCapAsRoot.)
+func TestAKeptCapabilityDoesNotLetTheChildOpenARootFile(t *testing.T) {
+	needRoot(t)
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	secret := filepath.Join(dir, "rootonly")
+	if err := os.WriteFile(secret, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, keep := range [][]Cap{nil, {CapNetAdmin}, {CapNetAdmin, CapNetRaw, CapIPCLock}} {
+		var err error
+		var wait func() (int, error)
+		onThread(func() {
+			wait, err = start(User{UID: 12345, GID: 12345, Keep: keep}, []string{secret}, nil)
+		})
+		if err == nil || !errors.Is(err, os.ErrPermission) {
+			t.Errorf("Keep %v: a 0700 root file was started as uid 12345: wait=%v err=%v", keep, wait != nil, err)
+		}
 	}
 }
 

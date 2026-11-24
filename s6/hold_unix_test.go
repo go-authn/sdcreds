@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"syscall"
 	"testing"
@@ -82,9 +81,7 @@ func TestHoldHelper(t *testing.T) {
 
 func TestASecondSignalDuringCleanUpDoesNotEndTheRun(t *testing.T) {
 	for _, mode := range []string{"after-wait", "start-error"} {
-		cmd := exec.Command(os.Args[0], "-test.run=^TestHoldHelper$", "-test.v")
-		cmd.Env = append(os.Environ(), holdHelperEnv+"="+mode)
-		out, err := cmd.CombinedOutput()
+		out, err := helperOutput(t, append(os.Environ(), holdHelperEnv+"="+mode), "-test.run=^TestHoldHelper$", "-test.v")
 		if err != nil || !strings.Contains(string(out), "survived") || strings.Contains(string(out), "mount left") {
 			t.Errorf("%s: the run was ended by the signal: %v\n%s", mode, err, out)
 		}

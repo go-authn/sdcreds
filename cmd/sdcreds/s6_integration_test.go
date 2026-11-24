@@ -4,6 +4,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -26,6 +28,7 @@ type itRig struct {
 	dir, bin, secret, src string
 	base                  string
 	env                   []string
+	hung                  atomic.Bool
 }
 
 func newITRig(t *testing.T) *itRig {
@@ -69,8 +72,26 @@ func newITRig(t *testing.T) *itRig {
 	return r
 }
 
+// childDeadline bounds every run of the binary: a binary that does not return
+// (a wait that never ends) fails the test that started it, by name, and is
+// killed, rather than blocking until the 10-minute limit of go test or the
+// 15-minute kill of CI.
+const childDeadline = 30 * time.Second
+
 func (r *itRig) command(stdin string, args ...string) *exec.Cmd {
-	cmd := exec.Command(r.bin, args...)
+	ctx, cancel := context.WithTimeout(context.Background(), childDeadline)
+	r.t.Cleanup(cancel)
+	cmd := exec.CommandContext(ctx, r.bin, args...)
+	// Cancel runs before the kill and before Wait returns, so the flag is set
+	// by the time the caller sees the result.
+	cmd.Cancel = func() error {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			r.hung.Store(true)
+			r.t.Errorf("deadline: sdcreds %v did not return within %v", args, childDeadline)
+		}
+		return cmd.Process.Kill()
+	}
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Env = r.env
 	cmd.Stdin = strings.NewReader(stdin)
 	return cmd
@@ -78,6 +99,10 @@ func (r *itRig) command(stdin string, args ...string) *exec.Cmd {
 
 func (r *itRig) sdcreds(stdin string, args ...string) (string, error) {
 	out, err := r.command(stdin, args...).CombinedOutput()
+	if r.hung.Load() {
+		// The deadline reported it; stop the test here rather than run on.
+		r.t.Fatalf("sdcreds %v hung: %v: %s", args, err, out)
+	}
 	return string(out), err
 }
 

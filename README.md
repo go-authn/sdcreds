@@ -85,7 +85,7 @@ per-service `tmpfs` (`nodev,noexec,nosuid,nosymfollow,noswap`, mode 0700, size a
 inode count bounded; `ramfs` if the kernel lacks those options), writes the
 plaintext 0400 owned by the service user, remounts it read-only, sets
 `CREDENTIALS_DIRECTORY`, then starts the service in a child that drops privileges
-(`no_new_privs`, an empty capability set) and waits for it. `s6-run` keeps its
+(`no_new_privs`, an empty capability set; see `--keep-cap` below) and waits for it. `s6-run` keeps its
 privileges and the mount, so a program that cannot be executed (not an
 executable file, a `noexec` file system) is reported by the child's exec and the
 credentials are taken away before `s6-run` fails; the same happens when the
@@ -103,6 +103,50 @@ detaches only a mount of that name. A credential sealed with the null key is ref
 directory; it is idempotent. At most 1024 credentials and 16 MiB per service.
 Linux only; elsewhere the commands report `ErrUnsupported`.
 
+### Keeping a capability: `--keep-cap`
+
+A service that needs one capability (a VPN server that configures a tun device
+needs `CAP_NET_ADMIN`) runs with `sdcreds s6-run --keep-cap=CAP_NET_ADMIN ...`.
+The flag is repeatable and comma-separated (`--keep-cap=CAP_NET_ADMIN,CAP_NET_RAW`
+or one flag each) and has **no default**: without it the service runs exactly as
+before, with every capability set empty.
+
+It is an **allowlist**, and only these seven capabilities can be kept, each one
+because it is not root-equivalent and gives no way to read or write the credential
+tmpfs (that needs `CAP_DAC_OVERRIDE`, `CAP_DAC_READ_SEARCH`, `CAP_FOWNER`, `CAP_CHOWN`
+or `CAP_SYS_ADMIN`) or to signal the root `s6-run` (`CAP_KILL`, `CAP_SYS_PTRACE`,
+`CAP_SETUID`):
+
+| capability | what it allows |
+| --- | --- |
+| `CAP_NET_ADMIN` | interfaces, routes, firewall, tun devices |
+| `CAP_NET_BIND_SERVICE` | ports below 1024 |
+| `CAP_NET_RAW` | raw and packet sockets |
+| `CAP_NET_BROADCAST` | broadcast and multicast sockets |
+| `CAP_IPC_LOCK` | `mlock`, so key material stays out of swap |
+| `CAP_WAKE_ALARM` | timers that wake the system |
+| `CAP_BLOCK_SUSPEND` | holding the system awake |
+
+Any other capability that exists is an error that names the allowlist, and so is
+a name that is not a capability; both are reported before the key is read,
+anything is decrypted or anything is mounted.
+
+The service then has, in its bounding, permitted, inheritable, effective and
+ambient sets, exactly the kept capabilities and nothing else. `no_new_privs`
+stays on, so a set-user-id or file-capability program it runs gains nothing, and
+the securebit `SECBIT_NOROOT` is set and locked (`SECBIT_NOROOT_LOCKED`): the
+service cannot unlock it, and reaching uid 0 would give it nothing.
+`SECBIT_NO_SETUID_FIXUP` is deliberately not set: with it the child would keep
+its whole effective set under the service uid until its `execve` and could open
+a root-only file, whereas without it the change of uid empties the effective
+set and the ambient set gives back exactly the kept set at the `execve`. The
+order is the one of
+capabilities(7) and prctl(2): `no_new_privs`, the bounding set cut to the kept
+set, the inheritable set, the securebits, then in the child `SECBIT_KEEP_CAPS`
+across the change of uid, and the ambient raise. `s6-run`'s own privileges are
+unchanged; the interop test reads `/proc/self/status` of the service and of
+`s6-run` to check both.
+
 ### Security notes
 
 * The key files named by `--secret` and `--machine-id-file` must be root-owned
@@ -114,6 +158,17 @@ Linux only; elsewhere the commands report `ErrUnsupported`.
   `s6-run` when it is done with the credentials.
 * Only the child takes the identity of the service; `s6-run` and all its threads
   stay root. `s6-run` started inside a chroot starts the service in that chroot.
+* The service has no capability unless `--keep-cap` names one of the seven of the
+  allowlist above. A kept capability is a privilege of the service and the
+  operator's decision; `CAP_NET_ADMIN`, for one, acts on the network namespace
+  the service runs in, which is the HOST's unless the service is started in a
+  network namespace of its own (`--unshare` only gives it a private mount
+  namespace): there it can change interfaces, routes and the firewall, and write
+  host-wide network settings such as `ip_unprivileged_port_start`. `CAP_NET_RAW`
+  lets it read and forge packets in that namespace. Run such a service in its
+  own network namespace when that matters. None
+  adds any access to the credential file system (read-only, and the service user
+  already owns it) or any way to signal or ptrace `s6-run`.
 * A `TERM` (or any forwarded signal) is held by `s6-run` from before the first
   mount until the credentials are gone: one that comes while they are staged
   stops the run, with the status of a process killed by it, before the service
