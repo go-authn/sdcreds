@@ -316,7 +316,7 @@ func TestRestrictThreadFailures(t *testing.T) {
 		}
 		return nil
 	})
-	if err := restrictThread(); err == nil || !strings.Contains(err.Error(), "no_new_privs") || len(calls) != 1 {
+	if err := restrictThread(nil); err == nil || !strings.Contains(err.Error(), "no_new_privs") || len(calls) != 1 {
 		t.Errorf("%v %v", err, calls)
 	}
 	// The end of the capabilities of the kernel is not an error.
@@ -326,7 +326,7 @@ func TestRestrictThreadFailures(t *testing.T) {
 		}
 		return nil
 	})
-	if err := restrictThread(); err != nil {
+	if err := restrictThread(nil); err != nil {
 		t.Errorf("%v", err)
 	}
 	drops := 0
@@ -346,7 +346,7 @@ func TestRestrictThreadFailures(t *testing.T) {
 			}
 			return nil
 		})
-		if err := restrictThread(); err == nil || !strings.Contains(err.Error(), "capability bounding set") {
+		if err := restrictThread(nil); err == nil || !strings.Contains(err.Error(), "capability bounding set") {
 			t.Errorf("%d: %v", bad, err)
 		}
 		for _, c := range calls {

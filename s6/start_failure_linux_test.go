@@ -18,7 +18,7 @@ func TestStartWithFailedLaunchReturnsItsError(t *testing.T) {
 	old := restrict
 	defer func() { restrict = old }()
 	boom := errors.New("boom")
-	restrict = func() error { return boom }
+	restrict = func([]Cap) error { return boom }
 	sigs := make(chan os.Signal, 1)
 	sigs <- syscall.SIGHUP
 	stopped := make(chan struct{})

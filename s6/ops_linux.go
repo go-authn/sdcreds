@@ -10,9 +10,12 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 // Seams for the tests: the failures of these calls cannot be provoked on a
@@ -29,6 +32,8 @@ var (
 	sysRaw        = syscall.RawSyscall
 	sysRaw6       = syscall.RawSyscall6
 	prctlCall     = prctl
+	capGet        = unix.Capget
+	capSet        = unix.Capset
 	sysStatfs     = syscall.Statfs
 	mountinfoPath = "/proc/thread-self/mountinfo"
 )
@@ -292,6 +297,7 @@ const (
 	prCapbsetRead   = 23
 	prCapbsetDrop   = 24
 	prSetNoNewPrivs = 38
+	prSetSecurebits = 28
 	capLastCapMax   = 63
 )
 
@@ -310,10 +316,45 @@ func prctl(option, arg2 uintptr) (uintptr, error) {
 // The ids are not changed here: this thread and its process stay root, and the
 // child alone takes the identity of the service (SysProcAttr.Credential), so no
 // thread of the parent carries ids the service could act through.
-func restrictThread() error {
+//
+// With keep empty that is all, as in v0.1.0. With keep (the allowlisted
+// capabilities of --keep-cap) the bounding set is reduced to exactly keep
+// instead of emptied, and the thread is prepared so that its child ends up with
+// exactly keep in its permitted, inheritable, effective and ambient sets, in the
+// order capabilities(7) and prctl(2) need:
+//
+//  1. no_new_privs, first, so that nothing below can be undone by an exec.
+//  2. The bounding set is cut down to keep (PR_CAPBSET_DROP, CAP_SETPCAP).
+//     capabilities(7): the bounding set limits what exec may add to the
+//     permitted set and what capset may add to the inheritable set, so it is
+//     cut before and never grown.
+//  3. The inheritable set of the thread becomes keep (capset(2): the new
+//     inheritable set must be inside the old inheritable set plus the bounding
+//     set, which keep is). An ambient capability must be in both the permitted
+//     and the inheritable set (prctl(2), PR_CAP_AMBIENT_RAISE), and the
+//     inheritable set passes through exec unchanged, so it is exactly keep.
+//  4. The securebits NOROOT and NO_SETUID_FIXUP are set and locked
+//     (PR_SET_SECUREBITS, capabilities(7) "The securebits flag"), and a child
+//     inherits them across fork and exec: the service can never turn them off
+//     (the _LOCKED bits are irrevocable), so a uid 0 it might later reach gets
+//     no capability from being root, and a setuid() of its own changes none.
+//
+// The child's own part is SysProcAttr.AmbientCaps (see launch). Go's child sets
+// SECBIT_KEEP_CAPS before it changes uid, so the permitted set survives
+// setuid(2) (capabilities(7) "Effect of user ID changes on capabilities"),
+// then adds keep to the permitted and inheritable sets and raises each in the
+// ambient set. At execve(2) the permitted set of an unprivileged uid with no
+// file capabilities is the ambient set, and the effective set is the same: P'(perm)
+// = (P(inh) & F(inh)) | (F(perm) & bounding) | P'(amb), so permitted and
+// effective end up exactly keep, bounded by the bounding set, however large the
+// permitted set of the launcher was. This thread's permitted and effective sets
+// are not changed: the thread stays root with its own capabilities, and the
+// parent process is untouched.
+func restrictThread(keep []Cap) error {
 	if _, err := prctlCall(prSetNoNewPrivs, 1); err != nil {
 		return fmt.Errorf("no_new_privs: %w", err)
 	}
+	kept := 0
 	for c := uintptr(0); c <= capLastCapMax; c++ {
 		if _, err := prctlCall(prCapbsetRead, c); err != nil {
 			if errors.Is(err, syscall.EINVAL) {
@@ -321,9 +362,52 @@ func restrictThread() error {
 			}
 			return fmt.Errorf("capability bounding set: %w", err)
 		}
+		if slices.Contains(keep, Cap(c)) {
+			kept++
+			continue
+		}
 		if _, err := prctlCall(prCapbsetDrop, c); err != nil {
 			return fmt.Errorf("capability bounding set: %w", err)
 		}
 	}
+	if len(keep) == 0 {
+		return nil
+	}
+	if kept != len(keep) {
+		return errors.New("capability bounding set: the kernel does not know a capability that was asked to be kept")
+	}
+	if err := setInheritable(keep); err != nil {
+		return fmt.Errorf("inheritable set: %w", err)
+	}
+	if _, err := prctlCall(prSetSecurebits, secbitsLocked); err != nil {
+		return fmt.Errorf("securebits: %w", err)
+	}
 	return nil
 }
+
+// setInheritable makes the inheritable set of this thread exactly keep and
+// leaves its permitted and effective sets as they are.
+func setInheritable(keep []Cap) error {
+	hdr := unix.CapUserHeader{Version: unix.LINUX_CAPABILITY_VERSION_3}
+	var data [2]unix.CapUserData
+	if err := capGet(&hdr, &data[0]); err != nil {
+		return err
+	}
+	data[0].Inheritable, data[1].Inheritable = 0, 0
+	for _, c := range keep {
+		data[c/32].Inheritable |= 1 << (uint(c) % 32)
+	}
+	return capSet(&hdr, &data[0])
+}
+
+// The securebits of prctl(2) PR_SET_SECUREBITS (linux/securebits.h).
+const (
+	secbitNoRoot        = 1 << 0
+	secbitNoRootLocked  = 1 << 1
+	secbitNoSetuidFixup = 1 << 2
+	secbitNoFixupLocked = 1 << 3
+	// secbitsLocked is what a service with kept capabilities runs under. Not
+	// KEEP_CAPS: Go's child sets that itself around its setuid, and it is
+	// cleared by execve(2) whatever is asked here.
+	secbitsLocked = secbitNoRoot | secbitNoRootLocked | secbitNoSetuidFixup | secbitNoFixupLocked
+)

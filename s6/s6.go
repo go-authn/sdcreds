@@ -48,6 +48,9 @@ var ErrNotMounted = errors.New("s6: not a mount point")
 type User struct {
 	UID, GID int
 	Groups   []int
+	// Keep is the allowlisted capabilities the service keeps (Config.KeepCaps);
+	// Run sets it, Start applies it. Empty: the service has none.
+	Keep []Cap
 }
 
 // Ops are the system calls that need privileges.
@@ -116,8 +119,12 @@ type Config struct {
 	BaseDir string // absolute; the credentials live in BaseDir/Service
 	Source  string // directory of encrypted credentials, one file each
 	Unshare bool
-	Command []string
-	Env     []string // the environment of the service, usually os.Environ()
+	// KeepCaps are capabilities the service keeps (see ParseKeepCaps); each must be
+	// on the allowlist, which Run checks before anything is decrypted or mounted.
+	// None (the default): the service has an empty capability set.
+	KeepCaps []Cap
+	Command  []string
+	Env      []string // the environment of the service, usually os.Environ()
 	// Decrypt opens the encrypted file called name. It is where the key, the
 	// name binding and the null-key policy are applied.
 	Decrypt func(name string, encrypted []byte) ([]byte, error)
@@ -262,10 +269,14 @@ func Run(c Config, ops Ops) (err error) {
 	if len(c.Command) == 0 {
 		return errors.New("s6: no command")
 	}
+	if err := CheckKeepCaps(c.KeepCaps); err != nil {
+		return err
+	}
 	u, err := ops.LookupUser(c.User)
 	if err != nil {
 		return fmt.Errorf("s6: user %q: %w", c.User, err)
 	}
+	u.Keep = c.KeepCaps
 	// A command that cannot be found is learned before anything is mounted: after
 	// the privileges are dropped nothing could take the credentials away again.
 	path := c.Command[0]

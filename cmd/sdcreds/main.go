@@ -402,6 +402,7 @@ type s6Flags struct {
 	secret, machineIDFile          string
 	unshare                        bool
 	allowNull                      bool
+	keepCap                        []string
 }
 
 // s6HostKey is the host key of the privileged s6-run path: the default files
@@ -456,6 +457,9 @@ func (f *s6Flags) register(cmd *cobra.Command, run bool) {
 		fl.StringVar(&f.machineIDFile, "machine-id-file", "", "machine id file to use instead of "+sdcreds.MachineIDPath+" (absolute, owned by root, not writable by group or others)")
 		fl.BoolVar(&f.allowNull, "allow-null", false, "accept credentials sealed with the null key (no secrecy)")
 		fl.BoolVar(&f.unshare, "unshare", true, "give this process a private mount namespace (the mount then dies with the service)")
+		fl.StringArrayVar(&f.keepCap, "keep-cap", nil, "capability the command keeps (repeatable, or comma-separated); default none, so it runs with an empty capability set. "+
+			"Allowlist only: CAP_NET_ADMIN, CAP_NET_BIND_SERVICE, CAP_NET_RAW, CAP_NET_BROADCAST, CAP_IPC_LOCK, CAP_WAKE_ALARM, CAP_BLOCK_SUSPEND. "+
+			"The kept set is the whole bounding, permitted, inheritable and ambient set of the command; no_new_privs stays on and the securebits NOROOT and NO_SETUID_FIXUP are locked")
 		_ = cmd.MarkFlagRequired("user")
 		_ = cmd.MarkFlagRequired("source")
 	}
@@ -474,6 +478,12 @@ func s6RunCmd() *cobra.Command {
 		Short: "mount the decrypted credentials of a service and exec it",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// An unknown or forbidden capability stops the run here, before the key
+			// is read, anything is decrypted or anything is mounted.
+			keep, kerr0 := s6.ParseKeepCaps(f.keepCap)
+			if kerr0 != nil {
+				return kerr0
+			}
 			hardenProcess()
 			// The key is never chosen by the environment: this runs with
 			// privileges, in front of a service. SYSTEMD_CREDENTIAL_SECRET and
@@ -486,7 +496,7 @@ func s6RunCmd() *cobra.Command {
 			}
 			c := s6.Config{
 				Service: f.service, User: f.user, BaseDir: f.baseDir, Source: f.source,
-				Unshare: f.unshare, Command: args, Env: os.Environ(),
+				Unshare: f.unshare, KeepCaps: keep, Command: args, Env: os.Environ(),
 				// The key is wiped as soon as decryption ends, before the
 				// service starts; the defer above stays for an early return.
 				Decrypted: wipe,

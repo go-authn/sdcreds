@@ -122,7 +122,7 @@ func launch(ns, root *os.File, wd string, u User, path string, argv, env []strin
 	if err := enterNamespace(ns, root, wd); err != nil {
 		return nil, err
 	}
-	if err := restrict(); err != nil {
+	if err := restrict(u.Keep); err != nil {
 		return nil, fmt.Errorf("restrict: %w", err)
 	}
 	groups := make([]uint32, 0, len(u.Groups)+1)
@@ -141,6 +141,11 @@ func launch(ns, root *os.File, wd string, u User, path string, argv, env []strin
 			// Set in the child, between fork and exec.
 			Credential: &syscall.Credential{Uid: uint32(u.UID), Gid: uint32(u.GID), Groups: groups},
 		},
+	}
+	// The kept capabilities become ambient in the child, after its setuid (see
+	// restrictThread); with none, the field stays empty and the child is v0.1.0's.
+	for _, c := range u.Keep {
+		cmd.SysProcAttr.AmbientCaps = append(cmd.SysProcAttr.AmbientCaps, uintptr(c))
 	}
 	if err := cmd.Start(); err != nil {
 		return nil, err

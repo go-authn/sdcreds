@@ -22,7 +22,7 @@ func TestDropHelper(t *testing.T) {
 		t.Skip("child of TestPrivilegesAreDroppedForGood")
 	}
 	runtime.LockOSThread()
-	if err := restrictThread(); err != nil {
+	if err := restrictThread(nil); err != nil {
 		t.Fatal(err)
 	}
 	if v, err := prctl(39, 0); err != nil || v != 1 { // PR_GET_NO_NEW_PRIVS

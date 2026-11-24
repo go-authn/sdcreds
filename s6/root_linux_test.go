@@ -169,7 +169,7 @@ func TestLaunchRefusals(t *testing.T) {
 		t.Errorf("a thread that cannot chroot: %v", err)
 	}
 	chroot = oldChroot
-	restrict = func() error { return errors.New("boom") }
+	restrict = func([]Cap) error { return errors.New("boom") }
 	if err := try(nil, rootDir, "/"); err == nil || !strings.Contains(err.Error(), "restrict") {
 		t.Errorf("a thread that cannot be restricted: %v", err)
 	}
