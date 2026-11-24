@@ -4,13 +4,13 @@ package s6
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 const dropHelperEnv = "SDCREDS_S6_DROP_HELPER"
@@ -40,9 +40,7 @@ func TestPrivilegesAreDroppedForGood(t *testing.T) {
 	if os.Geteuid() != 0 {
 		t.Skip("needs root")
 	}
-	cmd := exec.Command(os.Args[0], "-test.run=^TestDropHelper$", "-test.v")
-	cmd.Env = append(os.Environ(), dropHelperEnv+"=1")
-	out, err := cmd.CombinedOutput()
+	out, err := helperOutput(t, append(os.Environ(), dropHelperEnv+"=1"), "-test.run=^TestDropHelper$", "-test.v")
 	if err != nil || !strings.Contains(string(out), "--- PASS: TestDropHelper") {
 		t.Fatalf("%v\n%s", err, out)
 	}
@@ -91,9 +89,19 @@ func TestNoThreadOfTheParentTakesTheServiceIdentity(t *testing.T) {
 	if serr != nil {
 		t.Fatal(serr)
 	}
+	if wait == nil {
+		t.Fatal("start succeeded but returned no wait function")
+	}
 	defer func() {
 		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM) // forwarded to the service
-		wait()
+		// Bounded: a service that never ends must fail this test by name.
+		res := make(chan struct{})
+		go func() { wait(); close(res) }()
+		select {
+		case <-res:
+		case <-time.After(30 * time.Second):
+			t.Error("the service did not end after the forwarded SIGTERM")
+		}
 	}()
 	for tid, ids := range threadUIDs(t) {
 		for _, id := range ids {

@@ -99,9 +99,7 @@ func TestTheRootDirectorySurvivesSetns(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(jail, "jail-marker"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(os.Args[0], "-test.run=^TestJailHelper$", "-test.v")
-	cmd.Env = append(os.Environ(), jailHelperEnv+"="+jail)
-	out, err := cmd.CombinedOutput()
+	out, err := helperOutput(t, append(os.Environ(), jailHelperEnv+"="+jail), "-test.run=^TestJailHelper$", "-test.v")
 	if err != nil || !strings.Contains(string(out), "--- PASS: TestJailHelper") {
 		t.Fatalf("%v\n%s", err, out)
 	}
