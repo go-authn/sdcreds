@@ -1,0 +1,364 @@
+//go:build unix
+
+package s6
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+	"syscall"
+	"testing"
+)
+
+// The base directory decides where credentials are mounted and what is
+// unmounted: it is root's, or the running user's, and no one else can write it.
+func TestBaseDirectoryOwnerAndMode(t *testing.T) {
+	for _, mode := range []os.FileMode{0o755, 0o750, 0o700} {
+		dir := t.TempDir()
+		os.Chmod(dir, mode)
+		st, _ := os.Stat(dir)
+		if err := checkBaseInfo(dir, st, os.Geteuid()); err != nil {
+			t.Errorf("%v refused: %v", mode, err)
+		}
+	}
+	for _, mode := range []os.FileMode{0o775, 0o757, 0o777, 0o722} {
+		dir := t.TempDir()
+		os.Chmod(dir, mode)
+		st, _ := os.Stat(dir)
+		if err := checkBaseInfo(dir, st, os.Geteuid()); err == nil || !strings.Contains(err.Error(), "writable") {
+			t.Errorf("%v accepted: %v", mode, err)
+		}
+	}
+	if os.Geteuid() != 0 {
+		dir := t.TempDir()
+		st, _ := os.Stat(dir)
+		if err := checkBaseInfo(dir, st, os.Geteuid()+1); err == nil || !strings.Contains(err.Error(), "owned by") {
+			t.Errorf("a foreign owner was accepted: %v", err)
+		}
+	}
+	file := filepath.Join(t.TempDir(), "f")
+	os.WriteFile(file, nil, 0o600)
+	st, _ := os.Stat(file)
+	if err := checkBaseInfo(file, st, os.Geteuid()); err == nil {
+		t.Error("a file was accepted as base directory")
+	}
+
+	// and Run and Finish refuse before they mount or unmount anything
+	r, c := newRig(t), config(t)
+	os.Chmod(c.BaseDir, 0o777)
+	if err := Run(c, r.ops()); err == nil || slices.Contains(r.calls, "mount") || slices.Contains(r.calls, "unmount") {
+		t.Errorf("Run: %v %v", err, r.calls)
+	}
+	r = newRig(t)
+	if err := Finish("web", c.BaseDir, r.ops()); err == nil || slices.Contains(r.calls, "unmount") {
+		t.Errorf("Finish: %v %v", err, r.calls)
+	}
+}
+
+// A symbolic link at the place of the credential directory is never followed.
+func TestSymlinkAtDirectoryIsRefused(t *testing.T) {
+	r, c := newRig(t), config(t)
+	victim := t.TempDir()
+	os.WriteFile(filepath.Join(victim, "keep"), []byte("x"), 0o600)
+	if err := os.Symlink(victim, Dir(c.BaseDir, "web")); err != nil {
+		t.Fatal(err)
+	}
+	err := Run(c, r.ops())
+	if err == nil || errors.Is(err, errExec) || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, call := range []string{"mount", "unmount", "chown", "remount", "move"} {
+		if slices.Contains(r.calls, call) {
+			t.Errorf("%s reached: %v", call, r.calls)
+		}
+	}
+
+	r = newRig(t)
+	err = Finish("web", c.BaseDir, r.ops())
+	if err == nil || slices.Contains(r.calls, "unmount") {
+		t.Errorf("Finish: %v %v", err, r.calls)
+	}
+	if _, err := os.Stat(filepath.Join(victim, "keep")); err != nil {
+		t.Errorf("the target of the link was touched: %v", err)
+	}
+	if st, err := os.Lstat(Dir(c.BaseDir, "web")); err != nil || st.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("the link was removed: %v", err)
+	}
+}
+
+// Only a memory file system is detached: something else mounted at the
+// directory was not put there by this package.
+func TestOnlyMemoryFilesystemsAreUnmounted(t *testing.T) {
+	for typ, want := range map[string]bool{"ext4": false, "overlay": false, "0x1234": false, "tmpfs": true, "ramfs": true} {
+		base := t.TempDir()
+		os.Mkdir(Dir(base, "web"), 0o700)
+		r := newRig(t)
+		r.layers[Dir(base, "web")] = 1
+		ops := r.ops()
+		ops.FSType = func(string) (string, error) {
+			if r.layers[Dir(base, "web")] == 0 {
+				return "ext4", nil // what lies below
+			}
+			return typ, nil
+		}
+		if err := Finish("web", base, ops); err != nil {
+			t.Fatalf("%s: %v", typ, err)
+		}
+		if got := slices.Contains(r.calls, "unmount"); got != want {
+			t.Errorf("%s: unmounted=%v want %v", typ, got, want)
+		}
+	}
+	// a file system that cannot be identified is an error, not a guess
+	base := t.TempDir()
+	os.Mkdir(Dir(base, "web"), 0o700)
+	r := newRig(t)
+	ops := r.ops()
+	boom := errors.New("statfs failed")
+	ops.FSType = func(string) (string, error) { return "", boom }
+	if err := Finish("web", base, ops); !errors.Is(err, boom) || slices.Contains(r.calls, "unmount") {
+		t.Errorf("%v %v", err, r.calls)
+	}
+}
+
+// The credentials are mounted and frozen out of the service user's reach: the
+// staging mount is under a directory only the owner can enter, never at the
+// final path, and is read-only (0500) when it is moved into place.
+func TestStagingMountIsPrivateUntilPlaced(t *testing.T) {
+	r, c := newRig(t), config(t)
+	dir := Dir(c.BaseDir, "web")
+	ops := r.ops()
+	var mounted, parentMode, moved = "", os.FileMode(0), ""
+	mount := ops.MountRAM
+	ops.MountRAM = func(d string) error {
+		mounted = d
+		if st, err := os.Stat(filepath.Dir(d)); err == nil {
+			parentMode = st.Mode().Perm()
+		}
+		return mount(d)
+	}
+	move := ops.Move
+	ops.Move = func(src, dst string) error {
+		moved = dst
+		if src != mounted {
+			t.Errorf("moved %s, mounted %s", src, mounted)
+		}
+		return move(src, dst)
+	}
+	if err := Run(c, ops); !errors.Is(err, errExec) {
+		t.Fatal(err)
+	}
+	if mounted == "" || mounted == dir || filepath.Dir(filepath.Dir(mounted)) != c.BaseDir || !strings.HasPrefix(filepath.Base(filepath.Dir(mounted)), ".stage-") {
+		t.Errorf("mounted at %q", mounted)
+	}
+	if parentMode != 0o700 {
+		t.Errorf("the staging parent is %v", parentMode)
+	}
+	if moved != dir {
+		t.Errorf("moved to %q", moved)
+	}
+	ents, _ := os.ReadDir(c.BaseDir)
+	for _, e := range ents {
+		if strings.HasPrefix(e.Name(), ".stage-") {
+			t.Errorf("%s left behind", e.Name())
+		}
+	}
+}
+
+// The service is not handed the paths of the host's key material.
+func TestServiceEnvironmentHoldsNoKeyPaths(t *testing.T) {
+	r, c := newRig(t), config(t)
+	c.Env = []string{"PATH=/bin", "SYSTEMD_CREDENTIAL_SECRET=/etc/credstore/s", "SDCREDS_MACHINE_ID_FILE=/x", "SYSTEMD_CREDENTIAL_SECRET_X=keep", "HOME=/h"}
+	if err := Run(c, r.ops()); !errors.Is(err, errExec) {
+		t.Fatal(err)
+	}
+	want := []string{"PATH=/bin", "SYSTEMD_CREDENTIAL_SECRET_X=keep", "HOME=/h", EnvVar + "=" + Dir(c.BaseDir, "web")}
+	if !slices.Equal(r.env, want) {
+		t.Errorf("env %v", r.env)
+	}
+}
+
+// A failure of the move leaves neither a mount nor a directory.
+func TestFailedMoveLeavesNothing(t *testing.T) {
+	r, c := newRig(t), config(t)
+	boom := errors.New("busy")
+	r.fail["move"] = boom
+	err := Run(c, r.ops())
+	if !errors.Is(err, boom) || slices.Contains(r.calls, "drop") || slices.Contains(r.calls, "exec") {
+		t.Fatalf("%v %v", err, r.calls)
+	}
+	for _, n := range r.layers {
+		if n != 0 {
+			t.Errorf("layers left: %v", r.layers)
+		}
+	}
+	ents, _ := os.ReadDir(c.BaseDir)
+	if len(ents) != 0 {
+		t.Errorf("left in the base directory: %v", ents)
+	}
+}
+
+// A credential file is judged by the descriptor it was opened as: a symbolic
+// link, a pipe (no wait for a writer) and a directory are all refused.
+func TestCredentialSourceMustBeARegularFile(t *testing.T) {
+	src := t.TempDir()
+	target := filepath.Join(t.TempDir(), "t")
+	os.WriteFile(target, []byte("x"), 0o600)
+	os.Symlink(target, filepath.Join(src, "link"))
+	if err := syscall.Mkfifo(filepath.Join(src, "pipe"), 0o600); err != nil {
+		t.Skip(err)
+	}
+	os.Mkdir(filepath.Join(src, "dir"), 0o700)
+	for _, name := range []string{"link", "pipe", "dir"} {
+		if _, err := readLimited(filepath.Join(src, name)); err == nil {
+			t.Errorf("%s accepted", name)
+		}
+	}
+
+	// whatever the path says, the handle decides
+	old := openSource
+	defer func() { openSource = old }()
+	openSource = func(string) (*os.File, error) { return os.Open(src) }
+	good := filepath.Join(t.TempDir(), "good")
+	os.WriteFile(good, []byte("x"), 0o600)
+	if _, err := readLimited(good); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("a directory handle was read: %v", err)
+	}
+	openSource = old
+	if b, err := readLimited(good); err != nil || string(b) != "x" {
+		t.Errorf("%q %v", b, err)
+	}
+}
+
+// Without a way to place the staged mount nothing is mounted and nothing runs.
+func TestMissingMoveIsRefused(t *testing.T) {
+	r, c := newRig(t), config(t)
+	ops := r.ops()
+	ops.Move = nil
+	err := noPanic(func() error { return Run(c, ops) })
+	if err == nil || errors.Is(err, errExec) || slices.Contains(r.calls, "mount") || slices.Contains(r.calls, "exec") {
+		t.Fatalf("%v %v", err, r.calls)
+	}
+}
+
+// A mount left by an earlier run that cannot be removed stops the start.
+func TestStaleMountThatWillNotGoStopsTheStart(t *testing.T) {
+	r, c := newRig(t), config(t)
+	dir := Dir(c.BaseDir, c.Service)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	r.layers[dir] = 1
+	boom := errors.New("busy")
+	r.fail["unmount"] = boom
+	err := Run(c, r.ops())
+	if !errors.Is(err, boom) || slices.Contains(r.calls, "mount") || slices.Contains(r.calls, "exec") {
+		t.Fatalf("%v %v", err, r.calls)
+	}
+}
+
+// A base directory that cannot be created, or a service directory that cannot
+// be made, ends the start before anything is mounted.
+func TestUnusableBaseDirectoryStopsTheStart(t *testing.T) {
+	for name, mk := range map[string]func(c *Config){
+		"base under a file": func(c *Config) {
+			f := filepath.Join(t.TempDir(), "f")
+			os.WriteFile(f, nil, 0o600)
+			c.BaseDir = filepath.Join(f, "base")
+		},
+		"service dir is a file": func(c *Config) {
+			os.WriteFile(Dir(c.BaseDir, c.Service), nil, 0o600)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, c := newRig(t), config(t)
+			mk(&c)
+			err := noPanic(func() error { return Run(c, r.ops()) })
+			if err == nil || errors.Is(err, errExec) || strings.HasPrefix(err.Error(), "panic") || slices.Contains(r.calls, "mount") {
+				t.Fatalf("%v %v", err, r.calls)
+			}
+		})
+	}
+}
+
+// A path that cannot be examined is an error, not an accepted directory.
+func TestMissingBaseAndServiceDirectoriesAreErrors(t *testing.T) {
+	gone := filepath.Join(t.TempDir(), "gone")
+	if err := noPanic(func() error { return requireDir(gone) }); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("requireDir on a missing path: %v", err)
+	}
+	if err := noPanic(func() error { return checkBase(gone) }); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("checkBase on a missing path: %v", err)
+	}
+}
+
+// noPanic runs f and turns a panic into an error, so a missing guard is
+// reported by an assertion and the tests after it still run.
+func noPanic(f func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = nil // the guard is gone: the caller's assertion fails
+		}
+	}()
+	return f()
+}
+
+// Finish with no base directory has nothing to release and touches nothing.
+func TestFinishWithoutBaseDirectoryDoesNothing(t *testing.T) {
+	r := newRig(t)
+	if err := Finish("web", filepath.Join(t.TempDir(), "gone"), r.ops()); err != nil || len(r.calls) != 0 {
+		t.Fatalf("%v %v", err, r.calls)
+	}
+}
+
+// A directory that does not exist is not mounted: no unmount is attempted on
+// it, and an error from asking what is there is reported.
+func TestUnmountAllOnAMissingOrUnreadableDirectory(t *testing.T) {
+	r := newRig(t)
+	ops := r.ops()
+	ops.FSType = func(string) (string, error) { return "", os.ErrNotExist }
+	if err := unmountAll(ops, "/x"); err != nil || slices.Contains(r.calls, "unmount") {
+		t.Errorf("%v %v", err, r.calls)
+	}
+	boom := errors.New("io")
+	ops.FSType = func(string) (string, error) { return "", boom }
+	if err := unmountAll(ops, "/x"); !errors.Is(err, boom) || slices.Contains(r.calls, "unmount") {
+		t.Errorf("%v %v", err, r.calls)
+	}
+}
+
+// A staging directory that cannot be created, or that cannot be removed once
+// the mount has been moved away, ends the start before the privileges drop.
+func TestStagingDirectoryFailuresStopTheStart(t *testing.T) {
+	t.Run("not creatable", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root ignores directory modes")
+		}
+		r, c := newRig(t), config(t)
+		if err := os.MkdirAll(Dir(c.BaseDir, c.Service), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		os.Chmod(c.BaseDir, 0o555)
+		t.Cleanup(func() { os.Chmod(c.BaseDir, 0o755) })
+		err := Run(c, r.ops())
+		if err == nil || errors.Is(err, errExec) || slices.Contains(r.calls, "mount") {
+			t.Fatalf("%v %v", err, r.calls)
+		}
+	})
+	t.Run("not removable", func(t *testing.T) {
+		r, c := newRig(t), config(t)
+		ops := r.ops()
+		move := ops.Move
+		ops.Move = func(src, dst string) error {
+			if err := move(src, dst); err != nil {
+				return err
+			}
+			return os.WriteFile(filepath.Join(src, "left"), nil, 0o600)
+		}
+		err := Run(c, ops)
+		if err == nil || errors.Is(err, errExec) || slices.Contains(r.calls, "drop") || slices.Contains(r.calls, "exec") {
+			t.Fatalf("%v %v", err, r.calls)
+		}
+	})
+}
