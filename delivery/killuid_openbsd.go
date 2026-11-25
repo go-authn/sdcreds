@@ -2,7 +2,6 @@ package delivery
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -78,16 +77,11 @@ func runKiller(exe string, uid, gid int, groups []int) (int, error) {
 	return -1, err
 }
 
-// The process table, from sysctl(3) kern.proc (sys/sysctl.h of OpenBSD): the
-// kernel fills one struct kinfo_proc per process, of the size asked for; the
-// pid is the int32 that follows twelve 64-bit pointers and three 32-bit fields.
+// The process table, from sysctl(3) kern.proc: the kernel fills one struct
+// kinfo_proc per process, of the size asked for; the layout is in kinfo.go.
 const (
-	kernProcUID  = 5 // KERN_PROC_UID: by effective uid
-	kernProcRUID = 6 // KERN_PROC_RUID: by real uid
-	kinfoSize    = 644
-	kinfoPidOff  = 12*8 + 3*4
-	procChunk    = 1024
-	procMax      = 1 << 20
+	procChunk = 1024
+	procMax   = 1 << 20
 )
 
 // listKern returns the pids that sysctl kern.proc reports for one selector.
@@ -101,11 +95,7 @@ func listKern(op, id int) ([]int, error) {
 		if n >= count {
 			continue // the table may be larger than the room asked for
 		}
-		pids := make([]int, 0, n)
-		for i := 0; i < n; i++ {
-			pids = append(pids, int(int32(binary.NativeEndian.Uint32(buf[i*kinfoSize+kinfoPidOff:]))))
-		}
-		return pids, nil
+		return parseKinfo(buf, op, id)
 	}
 	return nil, errors.New("the process table is larger than the limit")
 }
