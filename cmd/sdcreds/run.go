@@ -164,12 +164,12 @@ func plan(f runFlags, argv []string) (*runPlan, error) {
 }
 
 func checkClass(class string) error {
+	var names []string
 	f, err := os.Open(loginConfPath)
-	if err != nil {
-		return fmt.Errorf("%w: %v", errBadClass, err)
+	if err == nil {
+		names, err = ParseLoginClasses(f)
+		f.Close()
 	}
-	defer f.Close()
-	names, err := ParseLoginClasses(f)
 	if err != nil {
 		return fmt.Errorf("%w: %v", errBadClass, err)
 	}

@@ -16,6 +16,10 @@ import (
 // a private parent.
 var execAncestorsFrom = "/"
 
+// statPath is os.Stat; a variable so that a test can make a stat fail between
+// the resolution of a path and its judgement (a race in production).
+var statPath = os.Stat
+
 // canExecAs says, from stat alone, whether a process with these ids could
 // execute path: a regular file with an execute bit that applies to the user,
 // reached through directories the user can search. It follows symbolic links
@@ -27,18 +31,18 @@ func canExecAs(path string, uid, gid int, groups []int) error {
 		return err
 	}
 	for d := filepath.Dir(real); ; d = filepath.Dir(d) {
-		fi, err := os.Stat(d)
+		fi, err := statPath(d)
 		if err != nil {
 			return err
 		}
 		if !modeAllows(fi, 0o1, uid, gid, groups) {
 			return fmt.Errorf("directory %s is not searchable by uid %d", d, uid)
 		}
-		if d == "/" || d == execAncestorsFrom {
+		if d == "/" || d == execAncestorsFrom || filepath.Dir(d) == d {
 			break
 		}
 	}
-	fi, err := os.Stat(real)
+	fi, err := statPath(real)
 	if err != nil {
 		return err
 	}

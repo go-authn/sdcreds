@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"os/user"
@@ -84,6 +85,26 @@ func (e *runEnv) args(extra ...string) []string {
 
 // Every refusal: the typed error from plan, exit status 2 from the command, no
 // flow (so no key is opened, nothing decrypted or mounted).
+var errGroups = errors.New("groups unreadable")
+
+// The class check says WHY it refused: an unreadable or oversized login.conf
+// is not the same refusal as an unknown class.
+func TestCheckClassSaysWhy(t *testing.T) {
+	e := newRunEnv(t, "openbsd")
+	loginConfPath = filepath.Join(e.dir, "absent")
+	if err := checkClass("staff"); err == nil || !errors.Is(err, errBadClass) || !strings.Contains(err.Error(), "no such file") {
+		t.Errorf("missing login.conf: %v", err)
+	}
+	loginConfPath = filepath.Join(e.dir, "big")
+	big := append([]byte("staff:\\\n\t:x=y:\n"), bytes.Repeat([]byte("# pad\n"), loginConfMax/6+1)...)
+	if err := os.WriteFile(loginConfPath, big, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkClass("staff"); err == nil || !strings.Contains(err.Error(), "longer than") {
+		t.Errorf("oversized login.conf: %v", err)
+	}
+}
+
 func TestRunRefusals(t *testing.T) {
 	big := make([]byte, 2<<20)
 	cases := []struct {
@@ -104,6 +125,12 @@ func TestRunRefusals(t *testing.T) {
 		{"unknown class", "openbsd", nil, func(e *runEnv) []string { return []string{"--class=nope", "--", e.prog} }, errBadClass},
 		{"login.conf missing", "openbsd", func(e *runEnv) { loginConfPath = filepath.Join(e.dir, "absent") },
 			func(e *runEnv) []string { return []string{"--class=staff", "--", e.prog} }, errBadClass},
+		{"uid 0 is refused before the groups are read", "openbsd",
+			func(e *runEnv) { userGroupIDs = func(*user.User) ([]string, error) { return nil, errors.New("boom") } },
+			func(e *runEnv) []string { return []string{"--user=toor", "--", e.prog} }, delivery.ErrRootTarget},
+		{"groups unreadable", "openbsd",
+			func(e *runEnv) { userGroupIDs = func(*user.User) ([]string, error) { return nil, errGroups } },
+			func(e *runEnv) []string { return []string{"--", e.prog} }, errGroups},
 		{"keep-cap on openbsd", "openbsd", nil, func(e *runEnv) []string { return []string{"--keep-cap=CAP_NET_RAW", "--", e.prog} }, errKeepCapOS},
 		{"class on linux", "linux", nil, func(e *runEnv) []string { return []string{"--class=staff", "--", e.prog} }, errClassOS},
 		{"bad capability", "linux", nil, func(e *runEnv) []string { return []string{"--keep-cap=CAP_SYS_ADMIN", "--", e.prog} }, nil},
@@ -284,8 +311,12 @@ func TestCanExecAs(t *testing.T) {
 		}
 	}
 	// a directory is not a program; a link is resolved; a dead link fails.
-	if err := canExecAs(dir, other, other, nil); err == nil {
-		t.Error("a directory was accepted")
+	d755 := filepath.Join(dir, "d755")
+	if err := os.Mkdir(d755, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := canExecAs(d755, other, other, nil); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("a directory: %v", err)
 	}
 	good := mk("good", 0o755)
 	ln := filepath.Join(dir, "ln")
@@ -298,9 +329,28 @@ func TestCanExecAs(t *testing.T) {
 	if err := os.Symlink(filepath.Join(dir, "gone"), filepath.Join(dir, "dead")); err != nil {
 		t.Fatal(err)
 	}
-	if err := canExecAs(filepath.Join(dir, "dead"), other, other, nil); err == nil {
-		t.Error("a dead link was accepted")
+	if err := canExecAs(filepath.Join(dir, "dead"), other, other, nil); err == nil || !strings.Contains(err.Error(), "gone") {
+		t.Errorf("a dead link: %v", err)
 	}
+	// a path that does not exist (relative, so the walk must still end).
+	if err := canExecAs("nowhere/prog", other, other, nil); err == nil || !strings.Contains(err.Error(), "nowhere") {
+		t.Errorf("a relative missing path: %v", err)
+	}
+	// a stat that fails after the path was resolved, on a directory and on the file.
+	boom := errors.New("stat boom")
+	rdir, _ := filepath.EvalSymlinks(dir)
+	for _, failOn := range []string{rdir, filepath.Join(rdir, "good")} {
+		statPath = func(p string) (os.FileInfo, error) {
+			if p == failOn {
+				return nil, boom
+			}
+			return os.Stat(p)
+		}
+		if err := canExecAs(good, me, other, nil); !errors.Is(err, boom) {
+			t.Errorf("stat of %s failing: %v", failOn, err)
+		}
+	}
+	statPath = os.Stat
 	// an unsearchable directory in the path.
 	sub := filepath.Join(dir, "sub")
 	if err := os.Mkdir(sub, 0o700); err != nil {

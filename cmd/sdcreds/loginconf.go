@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bufio"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -30,10 +28,8 @@ func ParseLoginClasses(r io.Reader) ([]string, error) {
 	}
 	var names []string
 	cont := false // the previous line ended with a backslash
-	sc := bufio.NewScanner(strings.NewReader(string(data)))
-	sc.Buffer(make([]byte, 0, 4096), loginConfMax+1)
-	for sc.Scan() {
-		line := sc.Text()
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSuffix(line, "\r")
 		wasCont := cont
 		cont = strings.HasSuffix(line, "\\")
 		if wasCont || line == "" || line[0] == '#' || line[0] == ' ' || line[0] == '\t' {
@@ -46,9 +42,6 @@ func ParseLoginClasses(r io.Reader) ([]string, error) {
 				names = append(names, n)
 			}
 		}
-	}
-	if err := sc.Err(); err != nil && !errors.Is(err, bufio.ErrTooLong) {
-		return nil, err
 	}
 	return names, nil
 }
