@@ -167,10 +167,16 @@ func bindToMachine(raw []byte, mid [16]byte, path string) ([]byte, error) {
 // descriptor gets the bytes of that same file. The result is a private copy.
 // machineID must not be null.
 func HostKeyFromFile(f *os.File, machineID [16]byte) ([]byte, error) {
+	return HostKeyFromFileMode(f, machineID, 0o400)
+}
+
+// HostKeyFromFileMode is HostKeyFromFile for a file whose access mode must be
+// exactly mode: the OpenBSD host key, /etc/sdcreds/host.key, is 0600.
+func HostKeyFromFileMode(f *os.File, machineID [16]byte, mode os.FileMode) ([]byte, error) {
 	if machineID == ([16]byte{}) {
 		return nil, fmt.Errorf("%w: machine id is null", ErrInvalid)
 	}
-	raw, err := readHostSecretFile(f)
+	raw, err := readHostSecretFileMode(f, mode)
 	if err != nil {
 		return nil, err
 	}

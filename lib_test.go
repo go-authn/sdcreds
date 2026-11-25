@@ -116,7 +116,7 @@ func TestHostKeyFile(t *testing.T) {
 	}
 	for _, mode := range []os.FileMode{0o600, 0o440, 0o404, 0o444, os.ModeSetuid | 0o400, os.ModeSticky | 0o400} {
 		p := writeSecret(t, mode, goodSecret())
-		if _, err := (sdcreds.HostKeyFile{Path: p, MachineID: fixedMID}).HostKey(); err == nil || !strings.Contains(err.Error(), "permissive") {
+		if _, err := (sdcreds.HostKeyFile{Path: p, MachineID: fixedMID}).HostKey(); err == nil || !strings.Contains(err.Error(), "access mode") {
 			t.Errorf("mode %o: %v", mode, err)
 		}
 	}

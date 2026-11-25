@@ -337,3 +337,41 @@ func TestSweepServiceOnlyTouchesItsService(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// The capacities the class table promises are what a mounted image really
+// offers: pickClass trusts them.
+func TestClassCapacities(t *testing.T) {
+	base := needRoot(t)
+	for _, cl := range classes {
+		dir := filepath.Join(base, fmt.Sprintf("c%d", cl.MiB))
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mine, theirs := os.NewFile(uintptr(fds[0]), "m"), os.NewFile(uintptr(fds[1]), "t")
+		a := helperArgs{Owner: os.Getpid(), Dir: dir, MiB: cl.MiB}
+		if _, err := defaultSpawn("")(append([]string{HelperCommand}, a.argv()...), theirs); err != nil {
+			t.Fatal(err)
+		}
+		theirs.Close()
+		line, err := bufio.NewReader(mine).ReadString('\n')
+		if err != nil || line != "ready\n" {
+			t.Fatalf("class %d: %q %v", cl.MiB, line, err)
+		}
+		var sf unix.Statfs_t
+		if err := unix.Statfs(dir, &sf); err != nil {
+			t.Fatal(err)
+		}
+		kb := int(uint64(sf.F_bavail) * uint64(sf.F_bsize) / 1024)
+		t.Logf("class %d MiB: %d KiB, %d inodes (table: %d, %d)", cl.MiB, kb, sf.F_ffree, cl.DataKB, cl.Inodes)
+		if kb < cl.DataKB || int(sf.F_ffree) < cl.Inodes {
+			t.Errorf("class %d MiB offers %d KiB and %d inodes, the table promises %d and %d", cl.MiB, kb, sf.F_ffree, cl.DataKB, cl.Inodes)
+		}
+		_, _ = mine.Write([]byte("release\n"))
+		_, _ = bufio.NewReader(mine).ReadString('\n')
+		mine.Close()
+	}
+}
