@@ -1,9 +1,14 @@
+//go:build unix
+
 package main
 
 import (
 	"github.com/go-authn/sdcreds/delivery"
 	"github.com/go-authn/sdcreds/s6"
 )
+
+// sourceReader is what s6-run reads its source with.
+var sourceReader = readTrustedSource
 
 // readTrustedSource is the sealed credentials of an s6-run source directory,
 // read through the trust walk of the `run` path (delivery.ReadSourceTrusted):
