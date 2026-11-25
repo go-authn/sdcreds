@@ -5,8 +5,14 @@ import (
 	"fmt"
 )
 
-// struct kinfo_proc of OpenBSD, from sys/sys/sysctl.h (openbsd/src, master,
-// lines 372-496, opened and read; the header says "new elements should only be
+// struct kinfo_proc of OpenBSD, from sys/sys/sysctl.h of the RELEASES targeted:
+// sys.tar.gz of 7.9 (sha256 c9ef2940...57f1) and of 8.0 (sha256 964b1aed...2aaf)
+// from cdn.openbsd.org/pub/OpenBSD/<rel>/, each hash read from the release's
+// SHA256.sig, whose signify signature was verified (Ed25519, against
+// openbsd-79-base.pub and openbsd-80-base.pub from ftp.openbsd.org). The file
+// is byte-identical in 7.9, 8.0 and openbsd/src master, so one layout serves
+// both; a release that changes it is refused by the per-element check below.
+// Lines 372-496 (the mirror has no OPENBSD_*_BASE tags), opened and read; the header says "new elements should only be
 // added to the end of this structure so binary compatibility can be
 // preserved", lines 360-362). KI_MAXCOMLEN is _MAXCOMLEN = 24 (sys/sys/syslimits.h
 // line 83). Offsets, with 8-byte alignment:
