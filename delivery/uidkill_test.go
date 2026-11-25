@@ -164,7 +164,19 @@ func TestKillAllOfReportsSurvivors(t *testing.T) {
 	f := newTable(10)
 	f.protect[10] = 1 << 30
 	start := f.clock
-	err := killAllOf(5000, f.ops())
+	// A loop that never gives up must fail here, not hang the suite.
+	bounded := func() procOps {
+		o := f.ops()
+		inner := o.sleep
+		o.sleep = func(d time.Duration) {
+			inner(d)
+			if f.clock.Sub(start) > 2*rootKillBudget {
+				t.Fatal("killAllOf did not give up at its budget")
+			}
+		}
+		return o
+	}
+	err := killAllOf(5000, bounded())
 	if !errors.Is(err, ErrUIDSurvives) {
 		t.Fatalf("got %v", err)
 	}
@@ -172,7 +184,8 @@ func TestKillAllOfReportsSurvivors(t *testing.T) {
 		t.Fatalf("gave up after %v, budget %v", got, rootKillBudget)
 	}
 	f.sigErr = unix.EPERM
-	if err := killAllOf(5000, f.ops()); !errors.Is(err, ErrUIDSurvives) || !errors.Is(err, unix.EPERM) {
+	start = f.clock
+	if err := killAllOf(5000, bounded()); !errors.Is(err, ErrUIDSurvives) || !errors.Is(err, unix.EPERM) {
 		t.Fatalf("a signal that failed is part of the error: %v", err)
 	}
 }
@@ -297,3 +310,17 @@ func TestAcquireUIDLock(t *testing.T) {
 	}
 }
 
+// A nil delivery or lock is safe to hand around: each answers with its zero value.
+func TestNilDeliveryAndLockAreSafe(t *testing.T) {
+	var d *Delivery
+	if err := d.Release(); err != nil {
+		t.Fatalf("Release of nil: %v", err)
+	}
+	if d.Lost() != nil || (&Delivery{}).Lost() != nil {
+		t.Fatal("Lost of a delivery without a helper is nil")
+	}
+	var l *Lock
+	if l.file() != nil || l.Close() != nil {
+		t.Fatal("a nil lock has no file and closes cleanly")
+	}
+}

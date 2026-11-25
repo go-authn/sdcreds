@@ -2,6 +2,7 @@ package delivery
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"embed"
 	"fmt"
@@ -73,7 +74,19 @@ func loadImage(mib int, region []byte) error {
 		return err
 	}
 	defer f.Close()
-	zr, err := gzip.NewReader(f)
+	// The compressed image is a few hundred KiB at most; it is read whole and
+	// judged against its pinned digest before any of it is decompressed.
+	gz, err := io.ReadAll(io.LimitReader(f, maxImageGz+1))
+	if err != nil {
+		return err
+	}
+	if len(gz) > maxImageGz {
+		return fmt.Errorf("%w: %d MiB is larger than %d bytes", ErrImageDigest, mib, maxImageGz)
+	}
+	if err := verifyImage(mib, gz); err != nil {
+		return err
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(gz))
 	if err != nil {
 		return err
 	}

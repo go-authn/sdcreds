@@ -121,7 +121,11 @@ type Config struct {
 	User    string
 	BaseDir string // absolute; the credentials live in BaseDir/Service
 	Source  string // directory of encrypted credentials, one file each
-	Unshare bool
+	// ReadSource, when set, reads the sealed credentials of Source instead of
+	// this package: the command sets it to a reader that judges the path (root-
+	// owned, no link, not writable by others) before anything is decrypted.
+	ReadSource func(dir string) ([]Sealed, error)
+	Unshare    bool
 	// KeepCaps are capabilities the service keeps (see ParseKeepCaps); each must be
 	// on the allowlist, which Run checks before anything is decrypted or mounted.
 	// None (the default): the service has an empty capability set.
@@ -167,6 +171,9 @@ func wipe(es []entry) {
 // load decrypts every credential of the source directory before anything is
 // mounted, so a bad credential leaves nothing behind.
 func load(c Config) ([]entry, error) {
+	if c.ReadSource != nil {
+		return loadSealed(c)
+	}
 	ents, err := os.ReadDir(c.Source)
 	if err != nil {
 		return nil, err
@@ -194,6 +201,43 @@ func load(c Config) ([]entry, error) {
 		}
 		total += len(pt)
 		out = append(out, entry{name, pt})
+		if total > MaxTotal {
+			wipe(out)
+			return nil, fmt.Errorf("s6: credentials of %s exceed %d bytes: %w", c.Service, MaxTotal, sdcreds.ErrTooLarge)
+		}
+	}
+	return out, nil
+}
+
+// Sealed is one encrypted credential as ReadSource returns it.
+type Sealed struct {
+	Name string
+	Data []byte
+}
+
+// loadSealed decrypts what Config.ReadSource returned, with the same limits.
+func loadSealed(c Config) ([]entry, error) {
+	sealed, err := c.ReadSource(c.Source)
+	if err != nil {
+		return nil, err
+	}
+	if len(sealed) > MaxEntries {
+		return nil, fmt.Errorf("s6: %s holds %d entries, at most %d", c.Source, len(sealed), MaxEntries)
+	}
+	var out []entry
+	total := 0
+	for _, s := range sealed {
+		if !sdcreds.NameValid(s.Name) {
+			wipe(out)
+			return nil, fmt.Errorf("s6: %q is not a valid credential name", s.Name)
+		}
+		pt, err := c.Decrypt(s.Name, s.Data)
+		if err != nil {
+			wipe(out)
+			return nil, fmt.Errorf("s6: credential %q: %w", s.Name, err)
+		}
+		total += len(pt)
+		out = append(out, entry{s.Name, pt})
 		if total > MaxTotal {
 			wipe(out)
 			return nil, fmt.Errorf("s6: credentials of %s exceed %d bytes: %w", c.Service, MaxTotal, sdcreds.ErrTooLarge)

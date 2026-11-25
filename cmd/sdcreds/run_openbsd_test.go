@@ -666,3 +666,30 @@ func TestSweepCommand(t *testing.T) {
 		t.Errorf("second sweep: %v %s", err, out)
 	}
 }
+
+// Unencrypted swap refuses the run; a variable the kernel does not have means
+// swap is always encrypted; a read that fails refuses too.
+func TestCheckSwapEncrypted(t *testing.T) {
+	old := swapEncrypt
+	defer func() { swapEncrypt = old }()
+	swapEncrypt = func() (int, error) { return 1, nil }
+	if err := checkSwapEncrypted(); err != nil {
+		t.Fatalf("encrypted swap: %v", err)
+	}
+	swapEncrypt = func() (int, error) { return 0, nil }
+	if err := checkSwapEncrypted(); !errors.Is(err, errSwapUnencrypted) {
+		t.Fatalf("unencrypted swap: %v", err)
+	}
+	boom := errors.New("boom")
+	swapEncrypt = func() (int, error) { return 1, boom }
+	if err := checkSwapEncrypted(); !errors.Is(err, boom) {
+		t.Fatalf("unreadable: %v", err)
+	}
+}
+
+// The real sysctl answers without error on a kernel that has it or not.
+func TestSwapEncryptReadsTheKernel(t *testing.T) {
+	if _, err := swapEncrypt(); err != nil {
+		t.Fatalf("sysctl vm.swapencrypt.enable: %v", err)
+	}
+}

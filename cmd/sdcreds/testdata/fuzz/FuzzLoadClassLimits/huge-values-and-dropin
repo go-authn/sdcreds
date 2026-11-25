@@ -1,0 +1,4 @@
+go test fuzz v1
+string("svc")
+string("default:\\\n\t:openfiles-cur=99999999999999999999:datasize=infinity:\n")
+string("svc:\\\n\t:tc=default:stacksize-max=8g:\n")

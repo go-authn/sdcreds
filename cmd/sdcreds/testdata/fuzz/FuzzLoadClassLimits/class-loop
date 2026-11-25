@@ -1,0 +1,4 @@
+go test fuzz v1
+string("a")
+string("a:tc=b:\nb:tc=c:\nc:tc=a:\n")
+string("")

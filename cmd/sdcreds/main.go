@@ -504,7 +504,10 @@ func runS6(f s6Flags, args []string) error {
 	}
 	c := s6.Config{
 		Service: f.service, User: f.user, BaseDir: f.baseDir, Source: f.source,
-		Unshare: f.unshare, KeepCaps: keep, Command: args, Env: os.Environ(),
+		// The source is walked like the key file: root-owned, no link, not
+		// writable by others, every directory above it too.
+		ReadSource: readTrustedSource,
+		Unshare:    f.unshare, KeepCaps: keep, Command: args, Env: os.Environ(),
 		// The key is wiped as soon as decryption ends, before the
 		// service starts; the defer above stays for an early return.
 		Decrypted: wipe,

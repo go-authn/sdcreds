@@ -99,7 +99,10 @@ anything is mounted, and so is whether the service user may execute it. The
 base directory, when `s6-run` creates it, is made 0755 whatever the umask.
 Every mount is named `sdcreds`, and `s6-finish` (like `s6-run` before it mounts)
 detaches only a mount of that name. A credential sealed with the null key is refused unless
-`--allow-null` is given, and one that carries no name is always refused. `sdcreds s6-finish --service=web` unmounts lazily and removes the
+`--allow-null` is given, and one that carries no name is always refused. The `--source` directory is
+judged like the host key: owned by root, not writable by group or others, no symbolic link in
+the path or among its files, every directory above it too; anything else is refused before a
+credential is decrypted. `sdcreds s6-finish --service=web` unmounts lazily and removes the
 directory; it is idempotent. At most 1024 credentials and 16 MiB per service.
 Linux only; elsewhere the commands report `ErrUnsupported`.
 
@@ -211,12 +214,29 @@ end. What to know:
   an absolute, normalised path that the user can execute.
 * **Killing sdcreds kills the program** and unmounts, even with SIGKILL. A helper process
   holds the service lock and watches sdcreds; on any end it kills everything the service user
-  runs (by uid, so a program that called setsid does not escape) and then unmounts. Because the
-  kill is by uid, `run` refuses a user that already has other processes: give the service its
-  own user. A fork bomb is bounded by the class's `maxproc`, not by sdcreds. If sdcreds and the
-  helper both die, `sdcreds sweep [--base DIR] [--service S]` (or the next start of the service)
-  removes the leftover. When the helper is lost while the program runs, sdcreds kills the
-  program and exits non-zero.
+  runs (by uid, so a program that called setsid does not escape) and then unmounts. The kill is
+  decided by root, not by a process running as the service user: the helper reads the kernel
+  process table for the real and the effective uid, stops every process it finds (a stopped process
+  cannot fork or signal), reads the table again until it no longer changes, then sends SIGKILL, and
+  repeats until the user has no process. A program that signals everything of its user in a loop
+  therefore does not stop it. When a process survives the budget (20 s), the helper still unmounts
+  (the secrets go), reports the failure and exits non-zero; Release never reports success while
+  processes of the user remain. A zombie is not told apart from a live process, so one that a
+  parent never reaped makes the user "busy" until it is. Because the kill is by uid, a user is
+  owned by one delivery at a time: the lock of the user (`.uid-<N>.lock` in `/var/run/sdcreds`, held
+  by the helper too) refuses a second service for the same user, even with another `--base`, and
+  `run` refuses a user that already has other processes: give the service its own user. A fork bomb
+  is bounded by the class's `maxproc`, not by sdcreds. If sdcreds and the helper both die,
+  `sdcreds sweep [--base DIR] [--service S]` (or the next start of the service) removes the
+  leftover. When the helper is lost while the program runs, sdcreds kills the program and exits
+  non-zero. When the program ends but the release fails, sdcreds exits with status 70 (or the
+  program's own status when that was already a failure) and says why on stderr.
+* **Swap must be encrypted.** The credentials are in memory, so `run` refuses to start when
+  `sysctl vm.swapencrypt.enable` is 0, or cannot be read (a kernel without the variable swaps
+  encrypted always). There is no flag to override it.
+* **The embedded file-system images are pinned**: the sha256 of each `delivery/images/ffs-<N>MiB.gz`
+  is in `delivery/images_manifest.go`, checked before the helper decompresses an image, and a test
+  holds the table to the files.
 * **`--class`** is looked up in `/etc/login.conf.d/<class>` first, then `/etc/login.conf`
   (`tc=` chains, `-cur`/`-max`, `@` negation); `login.conf.db` is not consulted. The resource
   limits of the class are applied to the program, only ever lowering what it would have, and a
@@ -228,7 +248,7 @@ end. What to know:
   and in the buffer cache of the MFS no more than the file system holds. `mlockall` cannot be
   used from a Go process on OpenBSD (it fails with ENOMEM at the default and at the hard
   RLIMIT_MEMLOCK, measured on 8.0), so the region is not locked: protection is
-  `vm.swapencrypt.enable` (on by default), core dumps off (RLIMIT_CORE 0 in sdcreds and the
+  `vm.swapencrypt.enable` (on by default, and checked at start), core dumps off (RLIMIT_CORE 0 in sdcreds and the
   helper) and `kern.nosuidcoredump`. A crash dump taken by an administrator can still contain
   the plaintext. The buffer cache and the heap were not inspected for residue after the end.
 * `setlogin` is not called: the program runs as the target user, which cannot call it.

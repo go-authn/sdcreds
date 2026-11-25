@@ -34,6 +34,33 @@ var hwUUID = func() ([16]byte, error) {
 
 func init() { runFlow = openbsdFlow }
 
+// swapEncrypt is `sysctl vm.swapencrypt.enable`; a seam for the tests. A kernel
+// without the variable (ENOENT) swaps encrypted always.
+var swapEncrypt = func() (int, error) {
+	n, err := unix.SysctlUint32("vm.swapencrypt.enable")
+	if errors.Is(err, unix.ENOENT) {
+		return 1, nil
+	}
+	return int(n), err
+}
+
+// errSwapUnencrypted refuses a run on a host whose swap is not encrypted: the
+// credentials live in memory, and an unencrypted swap would write them to disk.
+var errSwapUnencrypted = errors.New("vm.swapencrypt.enable is 0: swap is not encrypted, so the credentials could reach the disk in clear")
+
+// checkSwapEncrypted refuses the run when swap is not encrypted, or when that
+// cannot be told: a secret is never put in memory that may be paged out in clear.
+func checkSwapEncrypted() error {
+	n, err := swapEncrypt()
+	if err != nil {
+		return fmt.Errorf("sysctl vm.swapencrypt.enable: %w", err)
+	}
+	if n == 0 {
+		return errSwapUnencrypted
+	}
+	return nil
+}
+
 // openbsdHostKey reads the host key from one descriptor that was judged: the
 // path walk (root-owned ancestors, no link), then the exact mode 0600.
 func openbsdHostKey(secret, machineIDFile string) ([]byte, error) {
@@ -71,6 +98,9 @@ func openbsdHostKeyOrRefuse(secret, machineIDFile string) ([]byte, error) {
 // openbsdFlow is `run` once every refusal passed.
 func openbsdFlow(cmd *cobra.Command, p *runPlan) error {
 	hardenProcess()
+	if err := checkSwapEncrypted(); err != nil {
+		return &refusal{err}
+	}
 	self, err := trustedSelf()
 	if err != nil {
 		return &refusal{err}
