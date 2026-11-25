@@ -67,11 +67,7 @@ func ParseCtl(line string) (Ctl, error) {
 		if s == "" || s[0] == '0' || len(s) > 10 {
 			return Ctl{}, fmt.Errorf("%w: bad group", ErrCtl)
 		}
-		for i := 0; i < len(s); i++ {
-			if s[i] < '0' || s[i] > '9' {
-				return Ctl{}, fmt.Errorf("%w: bad group", ErrCtl)
-			}
-		}
+		// ParseUint takes digits only: no sign, no space, no underscore.
 		n, err := strconv.ParseUint(s, 10, 31)
 		if err != nil || n < 2 {
 			return Ctl{}, fmt.Errorf("%w: bad group", ErrCtl)

@@ -44,6 +44,13 @@ func ReadSource(dir string) ([]Credential, error) {
 	return out, nil
 }
 
+// Seams for the tests: an open descriptor that cannot be made to fail to stat
+// or to read on a real system.
+var (
+	statFile = func(f *os.File) (os.FileInfo, error) { return f.Stat() }
+	readFile = func(f *os.File) ([]byte, error) { return io.ReadAll(io.LimitReader(f, maxArmoured+1)) }
+)
+
 func readSourceFile(path string) ([]byte, error) {
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC|unix.O_NOCTTY, 0)
 	if err != nil {
@@ -54,14 +61,14 @@ func readSourceFile(path string) ([]byte, error) {
 	}
 	f := os.NewFile(uintptr(fd), path)
 	defer f.Close()
-	st, err := f.Stat()
+	st, err := statFile(f)
 	if err != nil {
 		return nil, err
 	}
 	if !st.Mode().IsRegular() {
 		return nil, fmt.Errorf("delivery: %s is not a regular file", path)
 	}
-	b, err := io.ReadAll(io.LimitReader(f, maxArmoured+1))
+	b, err := readFile(f)
 	if err != nil {
 		return nil, &os.PathError{Op: "read", Path: path, Err: err}
 	}

@@ -26,6 +26,8 @@ var (
 	openat  = unix.Openat
 	fstat   = unix.Fstat
 	mkdirat = unix.Mkdirat
+	fchmod  = unix.Fchmod
+	fchown  = unix.Fchown
 )
 
 // EnsureBase makes sure base exists and can be trusted, and returns nothing
@@ -62,11 +64,11 @@ func EnsureBase(base string) error {
 			}
 			fd, cur = next, filepath.Join(cur, comp)
 			if created {
-				if err := unix.Fchmod(fd, 0o711); err != nil {
+				if err := fchmod(fd, 0o711); err != nil {
 					unix.Close(fd)
 					return err
 				}
-				if err := unix.Fchown(fd, int(trustedUID), -1); err != nil {
+				if err := fchown(fd, int(trustedUID), -1); err != nil {
 					unix.Close(fd)
 					return err
 				}

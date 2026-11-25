@@ -210,11 +210,14 @@ type Delivery struct {
 	impl *state // OpenBSD only
 }
 
+// geteuid is os.Geteuid; a variable so that a test can be root for Prepare.
+var geteuid = os.Geteuid
+
 // Prepare mounts the credentials of c at Dir and returns once they are in place,
 // read-only. A failure, or a cancelled ctx, at any point after the helper was
 // started runs Release.
 func Prepare(ctx context.Context, c Config) (*Delivery, error) {
-	if err := validate(c, os.Geteuid()); err != nil {
+	if err := validate(c, geteuid()); err != nil {
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {

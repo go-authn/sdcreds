@@ -29,7 +29,7 @@ func AcquireLock(base, service string) (*Lock, error) {
 	}
 	f := os.NewFile(uintptr(fd), p)
 	var st unix.Stat_t
-	if err := unix.Fstat(fd, &st); err != nil {
+	if err := fstat(fd, &st); err != nil {
 		f.Close()
 		return nil, err
 	}

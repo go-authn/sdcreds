@@ -11,7 +11,9 @@ type state struct{ lost chan struct{} }
 
 func prepare(ctx context.Context, c Config) (*Delivery, error) { return nil, ErrUnsupported }
 
-func (d *Delivery) release() error { return nil }
+// release reads d like the OpenBSD one does, so a Release that lost its nil
+// check fails here as it would there.
+func (d *Delivery) release() error { _ = d.Dir; return nil }
 
 func (d *Delivery) guardGroup(pgid int) error { return ErrUnsupported }
 
