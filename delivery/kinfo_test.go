@@ -34,6 +34,12 @@ func TestParseKinfo(t *testing.T) {
 	if got, err := parseKinfo(nil, kernProcUID, 5000); err != nil || len(got) != 0 {
 		t.Fatalf("empty: %v %v", got, err)
 	}
+	// The kernel's own process (pid 0) is in the table of uid 0 on OpenBSD
+	// (seen on 7.9 and 8.0); it is not a target.
+	got, err = parseKinfo(append(elem(0, 0, 0), elem(7, 0, 0)...), kernProcUID, 0)
+	if err != nil || len(got) != 1 || got[0] != 7 {
+		t.Fatalf("pid 0: %v %v", got, err)
+	}
 }
 
 func TestParseKinfoRefusesAWrongLayout(t *testing.T) {
@@ -45,7 +51,6 @@ func TestParseKinfoRefusesAWrongLayout(t *testing.T) {
 		"an element of another uid":  {append(elem(10, 5000, 5000), elem(11, 7, 7)...), kernProcUID, 5000},
 		"the wrong uid field (eff)":  {elem(10, 5000, 6000), kernProcUID, 6000},
 		"the wrong uid field (real)": {elem(10, 5000, 6000), kernProcRUID, 5000},
-		"a zero pid":                 {elem(0, 5000, 5000), kernProcUID, 5000},
 		"a negative pid":             {elem(-4, 5000, 5000), kernProcUID, 5000},
 	} {
 		got, err := parseKinfo(c.buf, c.op, c.uid)
