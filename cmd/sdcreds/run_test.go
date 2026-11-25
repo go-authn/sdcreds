@@ -43,6 +43,12 @@ func newRunEnv(t *testing.T, os_ string) *runEnv {
 			return &user.User{Username: "svc", Uid: "12345", Gid: "12345"}, nil
 		case "toor":
 			return &user.User{Username: "toor", Uid: "0", Gid: "0"}, nil
+		case "wrap":
+			return &user.User{Username: "wrap", Uid: "4294967296", Gid: "12345"}, nil
+		case "wrapgid":
+			return &user.User{Username: "wrapgid", Uid: "12345", Gid: "4294967296"}, nil
+		case "gid0":
+			return &user.User{Username: "gid0", Uid: "12345", Gid: "0"}, nil
 		case "weird":
 			return &user.User{Username: "weird", Uid: "x", Gid: "y"}, nil
 		}
@@ -69,6 +75,9 @@ func newRunEnv(t *testing.T, os_ string) *runEnv {
 	oldFrom := execAncestorsFrom
 	t.Cleanup(func() { execAncestorsFrom = oldFrom })
 	execAncestorsFrom, _ = filepath.EvalSymlinks(e.dir)
+	oldTU, oldAF := trustedUID, ancestorsFrom
+	t.Cleanup(func() { trustedUID, ancestorsFrom = oldTU, oldAF })
+	trustedUID, ancestorsFrom = uint32(os.Getuid()), execAncestorsFrom
 	if err := os.Mkdir(filepath.Join(e.dir, "src"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -122,6 +131,19 @@ func TestRunRefusals(t *testing.T) {
 		{"unknown user", "openbsd", nil, func(e *runEnv) []string { return []string{"--user=nobody-here", "--", e.prog} }, errUnknownUser},
 		{"user without numeric id", "openbsd", nil, func(e *runEnv) []string { return []string{"--user=weird", "--", e.prog} }, errUnknownUser},
 		{"uid 0", "openbsd", nil, func(e *runEnv) []string { return []string{"--user=toor", "--", e.prog} }, delivery.ErrRootTarget},
+		{"uid that wraps to 0", "openbsd", nil, func(e *runEnv) []string { return []string{"--user=wrap", "--", e.prog} }, delivery.ErrBadID},
+		{"gid that wraps to 0", "openbsd", nil, func(e *runEnv) []string { return []string{"--user=wrapgid", "--", e.prog} }, delivery.ErrBadID},
+		{"gid 0", "openbsd", nil, func(e *runEnv) []string { return []string{"--user=gid0", "--", e.prog} }, delivery.ErrRootTarget},
+		{"supplementary group 0", "openbsd",
+			func(e *runEnv) {
+				userGroupIDs = func(u *user.User) ([]string, error) { return []string{u.Gid, "0"}, nil }
+			},
+			func(e *runEnv) []string { return []string{"--", e.prog} }, delivery.ErrRootTarget},
+		{"supplementary group that wraps", "openbsd",
+			func(e *runEnv) {
+				userGroupIDs = func(u *user.User) ([]string, error) { return []string{u.Gid, "4294967296"}, nil }
+			},
+			func(e *runEnv) []string { return []string{"--", e.prog} }, delivery.ErrBadID},
 		{"unknown class", "openbsd", nil, func(e *runEnv) []string { return []string{"--class=nope", "--", e.prog} }, errBadClass},
 		{"login.conf missing", "openbsd", func(e *runEnv) { loginConfPath = filepath.Join(e.dir, "absent") },
 			func(e *runEnv) []string { return []string{"--class=staff", "--", e.prog} }, errBadClass},

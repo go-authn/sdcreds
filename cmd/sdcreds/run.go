@@ -118,24 +118,35 @@ func plan(f runFlags, argv []string) (*runPlan, error) {
 	if err != nil {
 		return nil, &refusal{fmt.Errorf("%w: %q", errUnknownUser, f.user)}
 	}
-	uid, err1 := strconv.Atoi(u.Uid)
-	gid, err2 := strconv.Atoi(u.Gid)
+	// The ids are read as the 32-bit numbers the kernel receives, before any
+	// conversion: a text of 4294967296 must not become uid 0.
+	uid, err1 := strconv.ParseUint(u.Uid, 10, 64)
+	gid, err2 := strconv.ParseUint(u.Gid, 10, 64)
 	if err1 != nil || err2 != nil {
 		return nil, &refusal{fmt.Errorf("%w: %q has no numeric id", errUnknownUser, f.user)}
 	}
-	// Q9: uid 0 is refused, whatever the name; no flag lifts it.
-	if uid == 0 {
-		return nil, &refusal{delivery.ErrRootTarget}
+	// Q9 and U10: uid 0, gid 0 and group 0 (wheel) are refused, whatever the
+	// name; no flag lifts them.
+	if err := delivery.ValidID(clampID(uid), "uid"); err != nil {
+		return nil, &refusal{err}
 	}
-	p.uid, p.gid = uid, gid
+	if err := delivery.ValidID(clampID(gid), "gid"); err != nil {
+		return nil, &refusal{err}
+	}
+	p.uid, p.gid = int(uid), int(gid)
 	gids, err := userGroupIDs(u)
 	if err != nil {
 		return nil, &refusal{fmt.Errorf("groups of %q: %w", f.user, err)}
 	}
 	for _, g := range gids {
-		if n, err := strconv.Atoi(g); err == nil {
-			p.groups = append(p.groups, n)
+		n, err := strconv.ParseUint(g, 10, 64)
+		if err != nil {
+			return nil, &refusal{fmt.Errorf("%w: group %q of %q is not numeric", errUnknownUser, g, f.user)}
 		}
+		if err := delivery.ValidID(clampID(n), "group"); err != nil {
+			return nil, &refusal{err}
+		}
+		p.groups = append(p.groups, int(n))
 	}
 	if goos == "openbsd" && f.class != "" {
 		if err := checkClass(f.class); err != nil {
@@ -145,22 +156,31 @@ func plan(f runFlags, argv []string) (*runPlan, error) {
 	if euid() != 0 {
 		return nil, &refusal{delivery.ErrNotRoot}
 	}
-	if err := canExecAs(p.program, uid, gid, p.groups); err != nil {
+	if err := canExecAs(p.program, p.uid, p.gid, p.groups); err != nil {
 		return nil, &refusal{fmt.Errorf("%w: %v", errNotExecutable, err)}
 	}
-	creds, err := delivery.ReadSource(f.source)
+	creds, err := delivery.ReadSourceTrusted(f.source, trustedUID, ancestorsFrom)
 	if err != nil {
 		return nil, &refusal{err}
 	}
 	p.creds = creds
 	// Sizes, names, duplicates: the same function Prepare runs first.
 	if err := delivery.Check(delivery.Config{
-		Base: p.base, Name: f.service, UID: uid, GID: gid, Creds: creds,
+		Base: p.base, Name: f.service, UID: p.uid, GID: p.gid, Creds: creds,
 		Decrypt: func(string, []byte) ([]byte, error) { return nil, errors.New("not used") },
 	}); err != nil {
 		return nil, &refusal{err}
 	}
 	return p, nil
+}
+
+// clampID turns a parsed number into one ValidID can judge on any int size: a
+// value above the 32-bit range is passed as the largest, which it refuses.
+func clampID(n uint64) int64 {
+	if n >= 0xFFFFFFFF {
+		return 0xFFFFFFFF
+	}
+	return int64(n)
 }
 
 func checkClass(class string) error {

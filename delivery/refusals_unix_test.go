@@ -19,7 +19,17 @@ import (
 	"github.com/go-authn/sdcreds"
 )
 
+// trustTemp makes the temporary directories of this test count as trusted: they
+// belong to the user that runs the tests, not to root.
+func trustTemp(t *testing.T) {
+	t.Helper()
+	oldU, oldF := trustedUID, ancestorsFrom
+	trustedUID, ancestorsFrom = uint32(os.Getuid()), filepath.Dir(t.TempDir())
+	t.Cleanup(func() { trustedUID, ancestorsFrom = oldU, oldF })
+}
+
 func TestReadSourceRefusals(t *testing.T) {
+	trustTemp(t)
 	dir := t.TempDir()
 	write := func(name string, n int) {
 		t.Helper()
@@ -50,6 +60,7 @@ func TestReadSourceRefusals(t *testing.T) {
 func TestReadSourceEachRefusal(t *testing.T) {
 	boom := errors.New("boom")
 	mk := func(t *testing.T) (string, func(string, int)) {
+		trustTemp(t)
 		dir := t.TempDir()
 		return dir, func(name string, n int) {
 			t.Helper()
@@ -66,6 +77,7 @@ func TestReadSourceEachRefusal(t *testing.T) {
 		}
 	})
 	t.Run("missing directory", func(t *testing.T) {
+		trustTemp(t)
 		if _, err := ReadSource(filepath.Join(t.TempDir(), "none")); !errors.Is(err, fs.ErrNotExist) {
 			t.Fatal(err)
 		}
@@ -134,6 +146,35 @@ func TestReadSourceEachRefusal(t *testing.T) {
 			t.Fatalf("one over the bound: %v", err)
 		}
 	})
+}
+
+// A source someone else could have written is refused, whatever it holds: a
+// swapped sealed file is a rollback, or a secret of the attacker's choosing.
+func TestReadSourceTrustWalk(t *testing.T) {
+	trustTemp(t)
+	dir := t.TempDir()
+	f := filepath.Join(dir, "c")
+	if err := os.WriteFile(f, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadSourceTrusted(dir, uint32(os.Getuid())+1, ancestorsFrom); !errors.Is(err, ErrUntrustedSource) {
+		t.Fatalf("directory of another owner: %v", err)
+	}
+	if err := os.Chmod(f, 0o620); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadSource(dir); !errors.Is(err, ErrUntrustedSource) {
+		t.Fatalf("group-writable file: %v", err)
+	}
+	if err := os.Chmod(f, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadSource(dir); !errors.Is(err, ErrUntrustedSource) {
+		t.Fatalf("world-writable directory: %v", err)
+	}
 }
 
 func TestParseCtlLengthAndDigits(t *testing.T) {

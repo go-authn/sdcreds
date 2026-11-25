@@ -8,36 +8,81 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 
 	"github.com/go-authn/sdcreds"
 )
 
+// ErrUntrustedSource is a source directory or file that someone else could have
+// changed: a swapped sealed file is a rollback, or, with the null key, a secret
+// of the attacker's choosing.
+var ErrUntrustedSource = errors.New("delivery: untrusted credential source")
+
 // ReadSource reads the sealed credentials of a source directory, one regular
-// file each, in name order. It decrypts nothing. Every file is opened once,
-// without following a link or waiting on a pipe, judged by its descriptor, and
-// read up to a bound; an entry count above MaxEntries is refused before any
-// file is opened. The directory itself is not walked for trust (parity with
-// the s6 path): its contents are sealed, and a swap can only make a decryption
-// fail.
+// file each, in name order. It decrypts nothing.
+//
+// The directory is walked like the base directory: every component from "/" is
+// opened without following a link, owned by root and not writable by group or
+// others; each file is then opened relative to that judged descriptor, without
+// following a link or waiting on a pipe, and must be a regular file of root that
+// group and others cannot write. At most MaxEntries entries are read from the
+// descriptor, and the sealed forms together are bounded while they are read.
 func ReadSource(dir string) ([]Credential, error) {
-	ents, err := os.ReadDir(dir)
+	return ReadSourceTrusted(dir, trustedUID, ancestorsFrom)
+}
+
+// ReadSourceTrusted is ReadSource with the owner every directory and file must
+// have, and the directory from which the ancestors are judged ("/" and root in
+// production); a caller that tests as an ordinary user passes its own.
+func ReadSourceTrusted(dir string, owner uint32, from string) ([]Credential, error) {
+	// A link in the path is resolved first, and the directories it leads to are
+	// judged like any other: a link someone else made can only lead where the
+	// rules hold, and the walk itself follows nothing.
+	real, err := filepath.EvalSymlinks(dir)
 	if err != nil {
 		return nil, err
 	}
-	if len(ents) > MaxEntries {
-		return nil, fmt.Errorf("%w: %s holds %d entries, at most %d", ErrTooManyEntry, dir, len(ents), MaxEntries)
+	if rf, err := filepath.EvalSymlinks(from); err == nil {
+		from = rf
 	}
-	out := make([]Credential, 0, len(ents))
-	for _, e := range ents {
-		name := e.Name()
+	fd, err := walkDir(real, owner, from, false)
+	if err != nil {
+		if errors.Is(err, ErrUntrustedPath) {
+			return nil, fmt.Errorf("%w: %w", ErrUntrustedSource, err)
+		}
+		return nil, err
+	}
+	d := os.NewFile(uintptr(fd), dir)
+	defer d.Close()
+	ents, err := d.ReadDir(MaxEntries + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	if len(ents) > MaxEntries {
+		return nil, fmt.Errorf("%w: %s holds more than %d entries", ErrTooManyEntry, dir, MaxEntries)
+	}
+	names := make([]string, len(ents))
+	for i, e := range ents {
+		names[i] = e.Name()
+	}
+	slices.Sort(names)
+	out := make([]Credential, 0, len(names))
+	total := 0
+	for _, name := range names {
 		if !sdcreds.NameValid(name) {
 			return nil, fmt.Errorf("%w: credential %q", ErrBadName, name)
 		}
-		b, err := readSourceFile(filepath.Join(dir, name))
+		b, err := readSourceFile(fd, dir, name, owner)
 		if err != nil {
 			return nil, err
+		}
+		total += len(b)
+		if total > maxSealedTotal {
+			return nil, fmt.Errorf("%w: the credentials of %s exceed the limit", sdcreds.ErrTooLarge, dir)
 		}
 		out = append(out, Credential{Name: name, Sealed: b})
 	}
@@ -51,8 +96,9 @@ var (
 	readFile = func(f *os.File) ([]byte, error) { return io.ReadAll(io.LimitReader(f, maxArmoured+1)) }
 )
 
-func readSourceFile(path string) ([]byte, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC|unix.O_NOCTTY, 0)
+func readSourceFile(dfd int, dir, name string, owner uint32) ([]byte, error) {
+	path := strings.TrimSuffix(dir, "/") + "/" + name
+	fd, err := unix.Openat(dfd, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC|unix.O_NOCTTY, 0)
 	if err != nil {
 		if errors.Is(err, unix.ELOOP) {
 			return nil, fmt.Errorf("delivery: %s is not a regular file (a symbolic link is not followed)", path)
@@ -67,6 +113,9 @@ func readSourceFile(path string) ([]byte, error) {
 	}
 	if !st.Mode().IsRegular() {
 		return nil, fmt.Errorf("delivery: %s is not a regular file", path)
+	}
+	if sys, ok := st.Sys().(*syscall.Stat_t); !ok || sys.Uid != owner || st.Mode().Perm()&0o022 != 0 {
+		return nil, fmt.Errorf("%w: %s must belong to uid %d and not be writable by group or others", ErrUntrustedSource, path, owner)
 	}
 	b, err := readFile(f)
 	if err != nil {

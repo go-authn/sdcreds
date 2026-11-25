@@ -46,8 +46,13 @@ func TestValidateRefusals(t *testing.T) {
 		{"root base", 0, func(c *Config) { c.Base = "/" }, ErrBadBase},
 		{"path too long for the kernel", 0, func(c *Config) { c.Base = "/" + long }, ErrBadBase},
 		{"uid 0", 0, func(c *Config) { c.UID = 0 }, ErrRootTarget},
-		{"negative uid", 0, func(c *Config) { c.UID = -1 }, ErrBadName},
-		{"negative gid", 0, func(c *Config) { c.GID = -1 }, ErrBadName},
+		{"gid 0", 0, func(c *Config) { c.GID = 0 }, ErrRootTarget},
+		{"negative uid", 0, func(c *Config) { c.UID = -1 }, ErrBadID},
+		{"negative gid", 0, func(c *Config) { c.GID = -1 }, ErrBadID},
+		{"uid that wraps to 0", 0, func(c *Config) { c.UID = 1 << 32 }, ErrBadID},
+		{"gid that wraps to 0", 0, func(c *Config) { c.GID = 1 << 32 }, ErrBadID},
+		{"uid -1 as the kernel reads it", 0, func(c *Config) { c.UID = 0xFFFFFFFF }, ErrBadID},
+		{"gid -1 as the kernel reads it", 0, func(c *Config) { c.GID = 0xFFFFFFFF }, ErrBadID},
 		{"no decrypt", 0, func(c *Config) { c.Decrypt = nil }, ErrNoDecrypt},
 		{"too many", 0, func(c *Config) {
 			c.Creds = make([]Credential, MaxEntries+1)

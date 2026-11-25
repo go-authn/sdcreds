@@ -114,6 +114,23 @@ type Config struct {
 	Executable string
 }
 
+// ErrBadID is a user or group id that is not a usable 32-bit value.
+var ErrBadID = errors.New("delivery: invalid user or group id")
+
+// ValidID refuses an id the target of a delivery may not have: 0 (root, or
+// wheel), a negative number, anything that does not fit 32 bits, and
+// 0xFFFFFFFF, which the kernel reads as "no change". It judges the number
+// before any conversion to uint32, which is where 2^32 becomes 0.
+func ValidID(n int64, what string) error {
+	switch {
+	case n == 0:
+		return fmt.Errorf("%w: %s 0 (root) is refused", ErrRootTarget, what)
+	case n < 0 || n >= 0xFFFFFFFF:
+		return fmt.Errorf("%w: %s %d", ErrBadID, what, n)
+	}
+	return nil
+}
+
 // Dir is the directory that holds the credentials of a service.
 func Dir(base, name string) string { return filepath.Join(base, name) }
 
@@ -132,11 +149,13 @@ func validate(c Config, euid int) error {
 	if n := len(Dir(c.Base, c.Name)); n > maxDirLen {
 		return fmt.Errorf("%w: %q is %d bytes, at most %d (the kernel keeps %d of a mount point)", ErrBadBase, Dir(c.Base, c.Name), n, maxDirLen, maxDirLen)
 	}
-	if c.UID == 0 {
-		return ErrRootTarget
+	// The ids are judged as the 32-bit values the kernel will receive: a value
+	// that wraps to 0 is root, 0xFFFFFFFF is "no change" for chown.
+	if err := ValidID(int64(c.UID), "uid"); err != nil {
+		return err
 	}
-	if c.UID < 0 || c.GID < 0 {
-		return fmt.Errorf("%w: negative id", ErrBadName)
+	if err := ValidID(int64(c.GID), "gid"); err != nil {
+		return err
 	}
 	if c.Decrypt == nil {
 		return ErrNoDecrypt
