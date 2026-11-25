@@ -112,8 +112,11 @@ jobs:
             sudo -n install -d -o root -g wheel -m 755 /usr/local/libexec/sdcreds-ci
             sudo -n install -o root -g wheel -m 755 obsd/sdcreds /usr/local/libexec/sdcreds-ci/sdcreds
             chmod 755 obsd/run.test obsd/delivery.test
-            sudo -n ./obsd/delivery.test -test.v -test.timeout 5m
-            sudo -n env SDCREDS_BIN=/usr/local/libexec/sdcreds-ci/sdcreds ./obsd/run.test -test.v -test.timeout 5m
+            # Each test binary runs from its own package directory: the tests read
+            # files (the embedded images, testdata) by a path relative to it.
+            bin=$PWD/obsd
+            (cd delivery && sudo -n "$bin/delivery.test" -test.v -test.timeout 5m)
+            (cd cmd/sdcreds && sudo -n env SDCREDS_BIN=/usr/local/libexec/sdcreds-ci/sdcreds "$bin/run.test" -test.v -test.timeout 5m)
 
   fuzz:
     name: fuzz ${{ matrix.target }}

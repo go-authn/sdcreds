@@ -53,8 +53,9 @@ func parseKinfo(buf []byte, op, uid int) ([]int, error) {
 	for i := 0; i < n; i++ {
 		e := buf[i*kinfoSize : (i+1)*kinfoSize]
 		pid := int(int32(binary.NativeEndian.Uint32(e[kinfoPidOff:])))
-		if pid <= 0 || int(binary.NativeEndian.Uint32(e[off:])) != uid {
-			return nil, fmt.Errorf("delivery: element %d of the process table is not of uid %d: struct kinfo_proc is not the one expected", i, uid)
+		got := int(binary.NativeEndian.Uint32(e[off:]))
+		if pid <= 0 || got != uid {
+			return nil, fmt.Errorf("delivery: element %d of the process table has pid %d and uid %d, asked for uid %d (bytes 96-143: %x): struct kinfo_proc is not the one expected", i, pid, got, uid, e[96:144])
 		}
 		pids = append(pids, pid)
 	}
