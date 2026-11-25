@@ -55,6 +55,10 @@ const (
 	// MNAMELEN (90) bytes with a final NUL. A longer path could not be recognised
 	// by Sweep, so it is refused.
 	maxDirLen = 89
+	// maxGroups is NGROUPS_MAX of OpenBSD.
+	maxGroups = 16
+	// maxExeLen bounds the path of the executable on the helper's command line.
+	maxExeLen = 1023
 	// maxArmoured is the largest credential file accepted, the armoured form.
 	maxArmoured = sdcreds.EncryptedMax*4/3 + 4096
 	// maxSealedTotal bounds the sealed forms together: the plaintext cap in
@@ -99,20 +103,38 @@ type Config struct {
 	Base, Name string
 	// UID and GID own the files. UID 0 is refused.
 	UID, GID int
-	Creds    []Credential
+	// Groups are the supplementary groups of the target user; none may be 0.
+	// The process that kills the target's processes runs with them.
+	Groups []int
+	Creds  []Credential
 	// Decrypt opens one credential. It is where the key, the name binding and the
 	// null-key policy are applied; it is called only after every other check has
 	// passed. The returned plaintext is wiped by Prepare.
 	Decrypt func(name string, sealed []byte) ([]byte, error)
 	// SpawnHelper starts the helper process that serves the memory file system:
-	// argv[0] is the command (HelperCommand), ctl its control socket, which the
-	// helper receives as descriptor 3. nil: re-execute os.Executable() with argv,
-	// reaping the child. The caller of a custom hook must make the helper run
-	// ServeMFS(argv[1:], ctl). The helper never gets a secret.
-	SpawnHelper func(argv []string, ctl *os.File) (pid int, err error)
-	// Executable overrides os.Executable() for the default SpawnHelper.
+	// argv[0] is the command (HelperCommand); files[0] is its control socket and
+	// files[1] the service lock, which the helper receives as descriptors 3 and 4
+	// and keeps for as long as it lives, so that a second instance of the service
+	// cannot start while a helper of the first one still holds a mount. nil:
+	// execute Executable with argv, reaping the child. The caller of a custom
+	// hook must make the helper run ServeMFS(argv[1:], files[0]). The helper never
+	// gets a secret.
+	SpawnHelper func(argv []string, files []*os.File) (pid int, err error)
+	// Lock is the service lock the caller holds (AcquireLock); the helper
+	// inherits it. Required.
+	Lock *Lock
+	// Executable is the program that embeds this package: an absolute, normalised
+	// path that the caller has judged (root-owned, not writable by others, in
+	// directories likewise). It runs the helper and the processes that kill the
+	// target's processes; it is never taken from argv[0] or from PATH. Required.
 	Executable string
 }
+
+// Further typed refusals.
+var (
+	ErrNoLock       = errors.New("delivery: no service lock: the helper must inherit the lock of the service")
+	ErrNoExecutable = errors.New("delivery: no executable: an absolute path of the program that embeds this package is required")
+)
 
 // ErrBadID is a user or group id that is not a usable 32-bit value.
 var ErrBadID = errors.New("delivery: invalid user or group id")
@@ -156,6 +178,14 @@ func validate(c Config, euid int) error {
 	}
 	if err := ValidID(int64(c.GID), "gid"); err != nil {
 		return err
+	}
+	if len(c.Groups) > maxGroups {
+		return fmt.Errorf("%w: %d supplementary groups, at most %d", ErrBadID, len(c.Groups), maxGroups)
+	}
+	for _, g := range c.Groups {
+		if err := ValidID(int64(g), "group"); err != nil {
+			return err
+		}
 	}
 	if c.Decrypt == nil {
 		return ErrNoDecrypt
@@ -242,6 +272,12 @@ func Prepare(ctx context.Context, c Config) (*Delivery, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if c.Lock == nil {
+		return nil, ErrNoLock
+	}
+	if !filepath.IsAbs(c.Executable) || filepath.Clean(c.Executable) != c.Executable {
+		return nil, fmt.Errorf("%w: %q", ErrNoExecutable, c.Executable)
+	}
 	return prepare(ctx, c)
 }
 
@@ -254,11 +290,13 @@ func (d *Delivery) Release() error {
 	return d.release()
 }
 
-// GuardGroup asks the helper to kill the process group pgid, with SIGKILL, if
-// this process dies, before it unmounts: nothing may run without its owner. The
-// caller starts the consumer in a process group of its own (pgid is that
-// group's leader) and calls this before the consumer is allowed to exec. A group
-// below 2 is refused here and by the helper: kill(-1) is every process.
+// GuardGroup arms the helper for the consumer that the caller started in the
+// process group pgid (below 2 is refused). From then on, when this process dies
+// or the mount is unmounted from outside, the helper sends SIGKILL to every
+// process of the target user, however it left the group (setsid, setpgid,
+// daemonizing), and only then unmounts: nothing may run without its owner. The
+// group is not signalled itself, which would be wrong once its number is reused.
+// The caller calls this before the consumer is allowed to exec.
 func (d *Delivery) GuardGroup(pgid int) error {
 	if d == nil {
 		return errors.New("delivery: no delivery")

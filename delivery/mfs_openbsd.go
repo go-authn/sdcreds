@@ -28,6 +28,11 @@ type state struct {
 	pid  int
 	lost chan struct{}
 
+	// what it takes to kill the processes of the target user
+	exe      string
+	uid, gid int
+	groups   []int
+
 	replies chan Ctl
 
 	mu       sync.Mutex
@@ -35,16 +40,12 @@ type state struct {
 	done     chan struct{} // closed when the helper is reaped (default spawn)
 }
 
-func defaultSpawn(exe string) func(argv []string, ctl *os.File) (int, error) {
-	return func(argv []string, ctl *os.File) (int, error) {
-		if exe == "" {
-			var err error
-			if exe, err = os.Executable(); err != nil {
-				return 0, err
-			}
-		}
+// defaultSpawn starts exe, which Prepare has required to be an absolute path:
+// the helper runs as root, so its program is never found through argv[0] or PATH.
+func defaultSpawn(exe string) func(argv []string, files []*os.File) (int, error) {
+	return func(argv []string, files []*os.File) (int, error) {
 		cmd := exec.Command(exe, argv...)
-		cmd.ExtraFiles = []*os.File{ctl}
+		cmd.ExtraFiles = files
 		cmd.Stderr = os.Stderr
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 		cmd.Env = []string{}
@@ -57,8 +58,20 @@ func defaultSpawn(exe string) func(argv []string, ctl *os.File) (int, error) {
 }
 
 func prepare(ctx context.Context, c Config) (d *Delivery, err error) {
+	lockf := c.Lock.file()
+	if lockf == nil {
+		return nil, ErrNoLock
+	}
 	if err := EnsureBase(c.Base); err != nil {
 		return nil, err
+	}
+	// The delivery kills every process of the target user when it ends: it must
+	// own the user. One that has processes already is refused, before anything
+	// is decrypted.
+	if busy, err := UIDBusy(c.Executable, c.UID, c.GID, c.Groups); err != nil {
+		return nil, err
+	} else if busy {
+		return nil, fmt.Errorf("%w: uid %d", ErrUIDBusy, c.UID)
 	}
 	pts, _, err := decryptAll(c)
 	if err != nil {
@@ -81,7 +94,8 @@ func prepare(ctx context.Context, c Config) (d *Delivery, err error) {
 		}
 		return nil, &os.PathError{Op: "mkdir", Path: dir, Err: err}
 	}
-	st := &state{dir: dir, lost: make(chan struct{}), replies: make(chan Ctl, 8)}
+	st := &state{dir: dir, lost: make(chan struct{}), replies: make(chan Ctl, 8),
+		exe: c.Executable, uid: c.UID, gid: c.GID, groups: c.Groups}
 	made := &Delivery{Dir: dir, impl: st}
 	d = made
 	// d is the result variable: a "return nil, err" has already cleared it when
@@ -104,8 +118,8 @@ func prepare(ctx context.Context, c Config) (d *Delivery, err error) {
 	if spawn == nil {
 		spawn = defaultSpawn(c.Executable)
 	}
-	args := helperArgs{Owner: os.Getpid(), Dir: dir, MiB: cl.MiB}
-	pid, err := spawn(append([]string{HelperCommand}, args.argv()...), theirs)
+	args := helperArgs{Owner: os.Getpid(), Dir: dir, MiB: cl.MiB, UID: c.UID, GID: c.GID, Groups: c.Groups, Exe: c.Executable}
+	pid, err := spawn(append([]string{HelperCommand}, args.argv()...), []*os.File{theirs, lockf})
 	theirs.Close()
 	if err != nil {
 		return nil, fmt.Errorf("delivery: starting the helper: %w", err)
@@ -123,6 +137,9 @@ func prepare(ctx context.Context, c Config) (d *Delivery, err error) {
 	}
 	defer unix.Close(dfd)
 	if err := verifyMount(dfd, false); err != nil {
+		return nil, err
+	}
+	if err := verifyEmpty(dfd); err != nil {
 		return nil, err
 	}
 	if err := unix.Fchmod(dfd, 0o700); err != nil {
@@ -176,6 +193,25 @@ func verifyMount(fd int, rdonly bool) error {
 	}
 	if st.Ino != 2 {
 		return fmt.Errorf("%w: the directory is not the root of a file system", ErrMount)
+	}
+	return nil
+}
+
+// verifyEmpty refuses a root that holds anything: the image is empty, and a file
+// already there was not put there by this process.
+func verifyEmpty(fd int) error {
+	nfd, err := unix.Openat(fd, ".", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return err
+	}
+	f := os.NewFile(uintptr(nfd), "root")
+	defer f.Close()
+	names, err := f.Readdirnames(-1)
+	if err != nil {
+		return err
+	}
+	if len(names) != 0 {
+		return fmt.Errorf("%w: the new file system is not empty (%d entries)", ErrMount, len(names))
 	}
 	return nil
 }
@@ -271,15 +307,25 @@ func (d *Delivery) release() error {
 	}
 	s.released = true
 	s.mu.Unlock()
+	var kerr error
 	if s.ctl != nil {
 		_, _ = s.ctl.Write([]byte(Ctl{Kind: CtlRelease}.String() + "\n"))
 		// Earlier messages (a "ready" nobody read, for one) come before the answer.
-		t := time.NewTimer(releaseTimeout)
+		// The helper kills the target's processes before it answers.
+		t := time.NewTimer(releaseTimeout + 2*killBudget*killRounds)
+		answered := false
 	wait:
 		for {
 			select {
 			case c, ok := <-s.replies:
-				if !ok || c.Kind == CtlOK {
+				if !ok {
+					break wait
+				}
+				if c.Kind == CtlFail {
+					kerr = errors.New(c.Text)
+				}
+				if c.Kind == CtlOK || c.Kind == CtlFail {
+					answered = true
 					break wait
 				}
 			case <-t.C:
@@ -288,8 +334,23 @@ func (d *Delivery) release() error {
 		}
 		t.Stop()
 		_ = s.ctl.Close()
+		// A helper that is gone cannot have killed anything: this process does.
+		if !answered {
+			kerr = errors.Join(kerr, s.killTarget())
+		}
 	}
-	return removeMount(s.dir)
+	return errors.Join(kerr, removeMount(s.dir))
+}
+
+func (s *state) killTarget() error { return KillUID(s.exe, s.uid, s.gid, s.groups) }
+
+// KillTarget sends SIGKILL to every process of the target user, from this
+// process; the caller uses it when the helper is gone (Lost is closed).
+func (d *Delivery) KillTarget() error {
+	if d == nil || d.impl == nil {
+		return errors.New("delivery: no delivery")
+	}
+	return d.impl.killTarget()
 }
 
 // unmountTimeout bounds a forced unmount: an MFS is unmounted by its helper

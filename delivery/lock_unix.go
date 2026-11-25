@@ -47,6 +47,15 @@ func AcquireLock(base, service string) (*Lock, error) {
 	return &Lock{f}, nil
 }
 
+// file is the descriptor that holds the lock, for a child to inherit; nil once
+// the lock is closed.
+func (l *Lock) file() *os.File {
+	if l == nil {
+		return nil
+	}
+	return l.f
+}
+
 // Close releases the lock; idempotent.
 func (l *Lock) Close() error {
 	if l == nil || l.f == nil {

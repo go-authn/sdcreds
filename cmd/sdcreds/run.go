@@ -184,6 +184,12 @@ func clampID(n uint64) int64 {
 }
 
 func checkClass(class string) error {
+	// A class file in login.conf.d defines the class (and wins over login.conf).
+	if validClassName(class) {
+		if st, err := os.Lstat(loginConfDir + "/" + class); err == nil && st.Mode().IsRegular() {
+			return nil
+		}
+	}
 	var names []string
 	f, err := os.Open(loginConfPath)
 	if err == nil {
@@ -226,8 +232,13 @@ func runCmd() *cobra.Command {
 			"read; --check stops there.\n\n" +
 			"On OpenBSD the files live in a locked memory file system. There is no mount namespace:\n" +
 			"the mount is visible to every process and root can read the plaintext. Killing sdcreds\n" +
-			"kills the program and unmounts. --class is checked against /etc/login.conf but its\n" +
-			"limits are NOT applied to the program. On Linux this is s6-run with the same flags.",
+			"kills the program and unmounts; every process of USER is killed, so USER must have no\n" +
+			"other process (the run is refused if it has any). --class: the resource limits of the\n" +
+			"class (cputime, filesize, datasize, stacksize, coredumpsize, memoryuse, memorylocked,\n" +
+			"maxproc, openfiles) from /etc/login.conf and /etc/login.conf.d are applied to the\n" +
+			"program; nothing else of the class is. The program's environment is only LANG, LC_*,\n" +
+			"TZ, TERM, a fixed PATH and CREDENTIALS_DIRECTORY. On Linux this is s6-run with the\n" +
+			"same flags.",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			p, err := plan(f, args)
@@ -255,7 +266,7 @@ func runCmd() *cobra.Command {
 	fl.StringVar(&f.service, "service", "", "service name (lower case letters, digits, '_' and '-')")
 	fl.StringVar(&f.user, "user", "", "user that owns the credentials and runs PROGRAM (never root)")
 	fl.StringVar(&f.source, "source", "", "directory of encrypted credentials, one file each")
-	fl.StringVar(&f.class, "class", "", "OpenBSD login class; validated against login.conf, limits not applied")
+	fl.StringVar(&f.class, "class", "", "OpenBSD login class: its resource limits are applied to PROGRAM; refused if unreadable")
 	fl.StringVar(&f.base, "base", "", "directory holding one credential directory per service (default "+delivery.DefaultBase+" on OpenBSD, /run/sdcreds on Linux)")
 	fl.StringVar(&f.secret, "secret", "", "host key file (default /etc/sdcreds/host.key on OpenBSD, mode 0600; "+sdcreds.DefaultHostSecretPath+" on Linux)")
 	fl.StringVar(&f.machineIDFile, "machine-id-file", "", "machine id file instead of sysctl hw.uuid (OpenBSD) or /etc/machine-id")

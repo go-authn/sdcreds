@@ -42,7 +42,7 @@ func RootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: false,
 	}
-	root.AddCommand(encryptCmd(), decryptCmd(), setupCmd(), s6RunCmd(), s6FinishCmd(), runCmd())
+	root.AddCommand(encryptCmd(), decryptCmd(), setupCmd(), s6RunCmd(), s6FinishCmd(), runCmd(), sweepCmd())
 	addHelperCmds(root)
 	return root
 }

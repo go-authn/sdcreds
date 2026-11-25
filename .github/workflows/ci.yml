@@ -107,7 +107,8 @@ jobs:
           run: |
             set -eu
             uname -a
-            sudo -n sysctl hw.uuid || true
+            # no "|| true": a missing hw.uuid must fail the lane, not hide
+            sudo -n sysctl -n hw.uuid
             sudo -n install -d -o root -g wheel -m 755 /usr/local/libexec/sdcreds-ci
             sudo -n install -o root -g wheel -m 755 obsd/sdcreds /usr/local/libexec/sdcreds-ci/sdcreds
             chmod 755 obsd/run.test obsd/delivery.test

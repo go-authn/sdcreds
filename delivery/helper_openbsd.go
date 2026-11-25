@@ -184,6 +184,7 @@ func ServeMFS(argv []string, ctl *os.File) error {
 	}()
 
 	up := false
+	var fsid unix.Fsid
 	for i := 0; i < 500 && !up; i++ {
 		select {
 		case err := <-mountDone:
@@ -194,7 +195,7 @@ func ServeMFS(argv []string, ctl *os.File) error {
 		}
 		var st unix.Statfs_t
 		if unix.Statfs(a.Dir, &st) == nil && isOurs(&st) && cstr(st.F_mntonname[:]) == a.Dir {
-			up = true
+			up, fsid = true, st.F_fsid
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -216,41 +217,52 @@ func ServeMFS(argv []string, ctl *os.File) error {
 	}()
 	say(Ctl{Kind: CtlReady})
 
-	pgid := 0
-	teardown := func(kill bool) {
-		if kill && pgid >= 2 {
-			_ = unix.Kill(-pgid, unix.SIGKILL)
+	// Every process of the target user dies before the credentials go: by uid,
+	// not by process group, because a process of the target can leave its group
+	// (setsid, setpgid, daemonizing) and a group number can be reused. A failure
+	// is reported to the owner when it is still listening.
+	killAll := func() error { return KillUID(a.Exe, a.UID, a.GID, a.Groups) }
+	teardown := func() error {
+		kerr := killAll()
+		// The unmount is by path: it is made only if what is there is still the
+		// mount this helper made (same file system id), never another one.
+		var st unix.Statfs_t
+		if unix.Statfs(a.Dir, &st) == nil && isOurs(&st) && cstr(st.F_mntonname[:]) == a.Dir && st.F_fsid == fsid {
+			_ = unix.Unmount(a.Dir, unix.MNT_FORCE)
 		}
-		_ = unix.Unmount(a.Dir, unix.MNT_FORCE)
 		select {
 		case <-mountDone:
 		case <-time.After(5 * time.Second):
 		}
+		return kerr
 	}
 	for {
 		select {
 		case <-ownerGone:
-			teardown(true)
+			_ = teardown()
 			return nil
 		case <-sigs:
-			teardown(true)
+			_ = teardown()
 			return nil
-		case err := <-mountDone:
-			// Unmounted from outside (Sweep, an operator): nothing is left to serve.
-			_ = err
+		case <-mountDone:
+			// Unmounted from outside (Sweep, an operator): the credentials are gone,
+			// so what was running on them must go too, before this helper does.
+			_ = killAll()
 			return nil
 		case m := <-msgs:
 			if m.err != nil {
 				// End of the socket or garbage: the owner is gone or confused.
-				teardown(true)
+				_ = teardown()
 				return nil
 			}
 			switch m.c.Kind {
 			case CtlPGID:
-				pgid = m.c.PGID
 				say(Ctl{Kind: CtlOK})
 			case CtlRelease:
-				teardown(false)
+				if err := teardown(); err != nil {
+					say(Ctl{Kind: CtlFail, Text: err.Error()})
+					return err
+				}
 				say(Ctl{Kind: CtlOK})
 				return nil
 			default:

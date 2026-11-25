@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 // Image classes, in MiB: the memory file system is one of these sizes (the
@@ -70,21 +71,75 @@ func classByMiB(mib int) (class, bool) {
 
 // helperArgs are the arguments of the helper process (after HelperCommand).
 type helperArgs struct {
-	Owner int
-	Dir   string
-	MiB   int
+	Owner  int
+	Dir    string
+	MiB    int
+	UID    int
+	GID    int
+	Groups []int
+	Exe    string
 }
 
 func (a helperArgs) argv() []string {
-	return []string{"--owner", strconv.Itoa(a.Owner), "--dir", a.Dir, "--mib", strconv.Itoa(a.MiB)}
+	gs := ""
+	for i, g := range a.Groups {
+		if i > 0 {
+			gs += ","
+		}
+		gs += strconv.Itoa(g)
+	}
+	return []string{"--owner", strconv.Itoa(a.Owner), "--dir", a.Dir, "--mib", strconv.Itoa(a.MiB),
+		"--uid", strconv.Itoa(a.UID), "--gid", strconv.Itoa(a.GID), "--groups", gs, "--exe", a.Exe}
 }
 
-// parseHelperArgs reads exactly --owner N --dir D --mib M, in that order, and
-// refuses anything else: the helper runs as root and starts from a command line.
+// parseID reads a decimal id of 32 bits and judges it as ValidID does.
+func parseID(s, what string) (int, error) {
+	n, err := strconv.ParseUint(s, 10, 64)
+	if err != nil || (len(s) > 1 && s[0] == '0') {
+		return 0, fmt.Errorf("delivery: helper arguments: bad %s %q", what, s)
+	}
+	if n > 0xFFFFFFFF {
+		n = 0xFFFFFFFF
+	}
+	if err := ValidID(int64(n), what); err != nil {
+		return 0, fmt.Errorf("delivery: helper arguments: %w", err)
+	}
+	return int(n), nil
+}
+
+// parseHelperArgs reads exactly --owner N --dir D --mib M --uid U --gid G
+// --groups G1,G2 --exe E, in that order, and refuses anything else: the helper
+// runs as root and starts from a command line.
 func parseHelperArgs(argv []string) (helperArgs, error) {
 	var a helperArgs
-	if len(argv) != 6 || argv[0] != "--owner" || argv[2] != "--dir" || argv[4] != "--mib" {
-		return a, fmt.Errorf("delivery: helper arguments: want --owner N --dir D --mib M")
+	if len(argv) != 14 || argv[0] != "--owner" || argv[2] != "--dir" || argv[4] != "--mib" ||
+		argv[6] != "--uid" || argv[8] != "--gid" || argv[10] != "--groups" || argv[12] != "--exe" {
+		return a, fmt.Errorf("delivery: helper arguments: want --owner N --dir D --mib M --uid U --gid G --groups G1,G2 --exe E")
+	}
+	var err error
+	if a.UID, err = parseID(argv[7], "uid"); err != nil {
+		return a, err
+	}
+	if a.GID, err = parseID(argv[9], "gid"); err != nil {
+		return a, err
+	}
+	if argv[11] != "" {
+		parts := strings.Split(argv[11], ",")
+		if len(parts) > maxGroups {
+			return a, fmt.Errorf("delivery: helper arguments: more than %d groups", maxGroups)
+		}
+		for _, s := range parts {
+			g, err := parseID(s, "group")
+			if err != nil {
+				return a, err
+			}
+			a.Groups = append(a.Groups, g)
+		}
+	}
+	if e := argv[13]; !filepath.IsAbs(e) || filepath.Clean(e) != e || len(e) > maxExeLen {
+		return a, fmt.Errorf("delivery: helper arguments: bad executable %q", e)
+	} else {
+		a.Exe = e
 	}
 	n, err := strconv.ParseUint(argv[1], 10, 31)
 	if err != nil || n < 2 {

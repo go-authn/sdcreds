@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -24,6 +25,7 @@ func goodConfig() Config {
 		Base: "/var/run/sdcreds", Name: "bridge", UID: 1000, GID: 1000,
 		Creds:   []Credential{{"smtp-password", []byte("sealed")}},
 		Decrypt: okDecrypt,
+		Lock:    &Lock{}, Executable: "/usr/local/bin/sdcreds",
 	}
 }
 
@@ -53,6 +55,9 @@ func TestValidateRefusals(t *testing.T) {
 		{"gid that wraps to 0", 0, func(c *Config) { c.GID = 1 << 32 }, ErrBadID},
 		{"uid -1 as the kernel reads it", 0, func(c *Config) { c.UID = 0xFFFFFFFF }, ErrBadID},
 		{"gid -1 as the kernel reads it", 0, func(c *Config) { c.GID = 0xFFFFFFFF }, ErrBadID},
+		{"supplementary group 0", 0, func(c *Config) { c.Groups = []int{5, 0} }, ErrRootTarget},
+		{"supplementary group that wraps", 0, func(c *Config) { c.Groups = []int{1 << 32} }, ErrBadID},
+		{"too many groups", 0, func(c *Config) { c.Groups = make([]int, maxGroups+1) }, ErrBadID},
 		{"no decrypt", 0, func(c *Config) { c.Decrypt = nil }, ErrNoDecrypt},
 		{"too many", 0, func(c *Config) {
 			c.Creds = make([]Credential, MaxEntries+1)
@@ -291,29 +296,55 @@ func FuzzLockPath(f *testing.F) {
 }
 
 func TestParseHelperArgs(t *testing.T) {
-	good := helperArgs{Owner: 42, Dir: "/var/run/sdcreds/x", MiB: 4}
+	good := helperArgs{Owner: 42, Dir: "/var/run/sdcreds/x", MiB: 4, UID: 1000, GID: 1000, Groups: []int{1000, 77}, Exe: "/usr/local/bin/sdcreds"}
 	got, err := parseHelperArgs(good.argv())
-	if err != nil || got != good {
+	if err != nil || !slices.Equal(got.Groups, good.Groups) || got.Owner != good.Owner || got.Dir != good.Dir ||
+		got.MiB != good.MiB || got.UID != good.UID || got.GID != good.GID || got.Exe != good.Exe {
 		t.Fatal(got, err)
 	}
 	long := "/" + strings.Repeat("a", maxDirLen)
+	tail := []string{"--uid", "1000", "--gid", "1000", "--groups", "", "--exe", "/usr/local/bin/sdcreds"}
+	with := func(head ...string) []string { return append(slices.Clone(head), tail...) }
 	bad := [][]string{
 		nil,
 		{"--owner", "42", "--dir", "/a", "--mib"},
-		{"--dir", "/a", "--owner", "42", "--mib", "4"},
-		{"--owner", "1", "--dir", "/a", "--mib", "4"},
-		{"--owner", "0", "--dir", "/a", "--mib", "4"},
-		{"--owner", "-5", "--dir", "/a", "--mib", "4"},
-		{"--owner", "x", "--dir", "/a", "--mib", "4"},
-		{"--owner", "2147483648", "--dir", "/a", "--mib", "4"},
-		{"--owner", "42", "--dir", "a", "--mib", "4"},
-		{"--owner", "42", "--dir", "/", "--mib", "4"},
-		{"--owner", "42", "--dir", "/a/../b", "--mib", "4"},
-		{"--owner", "42", "--dir", "/a/", "--mib", "4"},
-		{"--owner", "42", "--dir", long, "--mib", "4"},
-		{"--owner", "42", "--dir", "/a", "--mib", "3"},
-		{"--owner", "42", "--dir", "/a", "--mib", "x"},
-		{"--owner", "42", "--dir", "/a", "--mib", "4", "extra"},
+		with("--dir", "/a", "--owner", "42", "--mib", "4"),
+		with("--owner", "1", "--dir", "/a", "--mib", "4"),
+		with("--owner", "0", "--dir", "/a", "--mib", "4"),
+		with("--owner", "-5", "--dir", "/a", "--mib", "4"),
+		with("--owner", "x", "--dir", "/a", "--mib", "4"),
+		with("--owner", "2147483648", "--dir", "/a", "--mib", "4"),
+		with("--owner", "42", "--dir", "a", "--mib", "4"),
+		with("--owner", "42", "--dir", "/", "--mib", "4"),
+		with("--owner", "42", "--dir", "/a/../b", "--mib", "4"),
+		with("--owner", "42", "--dir", "/a/", "--mib", "4"),
+		with("--owner", "42", "--dir", long, "--mib", "4"),
+		with("--owner", "42", "--dir", "/a", "--mib", "3"),
+		with("--owner", "42", "--dir", "/a", "--mib", "x"),
+		append(with("--owner", "42", "--dir", "/a", "--mib", "4"), "extra"),
+		// the old six-word form is not accepted: no target, no executable.
+		{"--owner", "42", "--dir", "/a", "--mib", "4"},
+	}
+	// every field of the tail is judged: ids as 32-bit values that are not root,
+	// the executable as an absolute, normalised path.
+	head := []string{"--owner", "42", "--dir", "/a", "--mib", "4"}
+	for _, tl := range [][]string{
+		{"--uid", "0", "--gid", "1000", "--groups", "", "--exe", "/x"},
+		{"--uid", "4294967296", "--gid", "1000", "--groups", "", "--exe", "/x"},
+		{"--uid", "4294967295", "--gid", "1000", "--groups", "", "--exe", "/x"},
+		{"--uid", "01", "--gid", "1000", "--groups", "", "--exe", "/x"},
+		{"--uid", "1000", "--gid", "0", "--groups", "", "--exe", "/x"},
+		{"--uid", "1000", "--gid", "4294967296", "--groups", "", "--exe", "/x"},
+		{"--uid", "1000", "--gid", "1000", "--groups", "0", "--exe", "/x"},
+		{"--uid", "1000", "--gid", "1000", "--groups", "5,0", "--exe", "/x"},
+		{"--uid", "1000", "--gid", "1000", "--groups", "5,", "--exe", "/x"},
+		{"--uid", "1000", "--gid", "1000", "--groups", "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17", "--exe", "/x"},
+		{"--uid", "1000", "--gid", "1000", "--groups", "", "--exe", "x"},
+		{"--uid", "1000", "--gid", "1000", "--groups", "", "--exe", "/a/../x"},
+		{"--uid", "1000", "--gid", "1000", "--groups", "", "--exe", ""},
+		{"--uid", "1000", "--gid", "1000", "--groups", "", "--exe", "/" + strings.Repeat("a", maxExeLen)},
+	} {
+		bad = append(bad, append(slices.Clone(head), tl...))
 	}
 	for _, argv := range bad {
 		if _, err := parseHelperArgs(argv); err == nil {
@@ -323,10 +354,10 @@ func TestParseHelperArgs(t *testing.T) {
 }
 
 func FuzzParseHelperArgs(f *testing.F) {
-	f.Add("42", "/var/run/x", "4")
-	f.Add("1", "/", "0")
-	f.Fuzz(func(t *testing.T, o, d, m string) {
-		a, err := parseHelperArgs([]string{"--owner", o, "--dir", d, "--mib", m})
+	f.Add("42", "/var/run/x", "4", "1000", "1000", "5,6", "/usr/bin/x")
+	f.Add("1", "/", "0", "0", "0", "0", "x")
+	f.Fuzz(func(t *testing.T, o, d, m, u, g, gs, e string) {
+		a, err := parseHelperArgs([]string{"--owner", o, "--dir", d, "--mib", m, "--uid", u, "--gid", g, "--groups", gs, "--exe", e})
 		if err != nil {
 			return
 		}
@@ -335,6 +366,15 @@ func FuzzParseHelperArgs(f *testing.F) {
 		}
 		if _, ok := classByMiB(a.MiB); !ok {
 			t.Fatalf("accepted size %d", a.MiB)
+		}
+		// the ids are the ones the kernel would receive, and none is root.
+		for _, id := range append([]int{a.UID, a.GID}, a.Groups...) {
+			if id < 1 || id >= 0xFFFFFFFF {
+				t.Fatalf("accepted id %d in %+v", id, a)
+			}
+		}
+		if len(a.Groups) > maxGroups || !filepath.IsAbs(a.Exe) || filepath.Clean(a.Exe) != a.Exe || len(a.Exe) > maxExeLen {
+			t.Fatalf("accepted %+v", a)
 		}
 	})
 }

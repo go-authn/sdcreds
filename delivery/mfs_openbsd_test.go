@@ -23,6 +23,10 @@ import (
 
 const testUID, testGID = 32001, 32001
 
+// exeEnv names the copy of the test binary that the target user can execute: it
+// is the program that embeds the package (the helper, the killer, the daemon).
+const exeEnv = "SDC_TEST_EXE"
+
 func TestMain(m *testing.M) {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
@@ -32,38 +36,113 @@ func TestMain(m *testing.M) {
 				os.Exit(1)
 			}
 			os.Exit(0)
+		case KillCommand:
+			os.Exit(KillMain(os.Args[2:]))
 		case "__owner":
 			ownerMain(os.Args[2:])
 			os.Exit(0)
+		case "__daemon":
+			daemonMain()
+		case "__sleeper":
+			time.Sleep(300 * time.Second)
+			os.Exit(0)
 		}
 	}
+	if os.Geteuid() == 0 && os.Getenv(exeEnv) == "" {
+		// A directory the target can search, holding a copy of this binary.
+		dir, err := os.MkdirTemp("/var/run", "sdctestbin")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		self, err := os.ReadFile(os.Args[0])
+		if err == nil {
+			err = os.Chmod(dir, 0o755)
+		}
+		if err == nil {
+			err = os.WriteFile(filepath.Join(dir, "exe"), self, 0o755)
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Setenv(exeEnv, filepath.Join(dir, "exe"))
+		code := m.Run()
+		os.RemoveAll(dir)
+		os.Exit(code)
+	}
 	os.Exit(m.Run())
+}
+
+// daemonMain is the "daemon": it starts a copy of itself in a session of its own
+// (as a daemon that calls setsid does), prints that process's pid, and sleeps.
+func daemonMain() {
+	cmd := exec.Command(os.Args[0], "__sleeper")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		fmt.Println("error", err)
+		os.Exit(1)
+	}
+	fmt.Println(cmd.Process.Pid)
+	time.Sleep(300 * time.Second)
+	os.Exit(0)
 }
 
 func fakeDecrypt(name string, sealed []byte) ([]byte, error) {
 	return append([]byte(nil), sealed...), nil
 }
 
-func testConfig(base, name string, creds ...Credential) Config {
-	return Config{Base: base, Name: name, UID: testUID, GID: testGID, Creds: creds, Decrypt: fakeDecrypt}
+func testExe() string { return os.Getenv(exeEnv) }
+
+// testConfig holds the service lock, as the caller of Prepare does; the lock
+// goes with the test.
+func testConfig(t testing.TB, base, name string, creds ...Credential) Config {
+	t.Helper()
+	if err := EnsureBase(base); err != nil {
+		t.Fatal(err)
+	}
+	l, err := AcquireLock(base, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { l.Close() })
+	return Config{Base: base, Name: name, UID: testUID, GID: testGID, Creds: creds, Decrypt: fakeDecrypt, Lock: l, Executable: testExe()}
 }
 
-// ownerMain: owner <base> <name> [memlock]. It prepares a delivery, starts
-// /bin/sleep in a process group of its own, guards the group, prints
-// "ready <sleep pid> <helper pid>" and waits for ever.
+// ownerMain: owner <base> <name> [memlock]. It prepares a delivery, starts a
+// daemon as the target user in a process group of its own, guards the group,
+// prints "ready <daemon pid> <helper pid> <pid of the daemon's detached child>"
+// and waits for ever. The daemon's child is in a session of its own: a kill by
+// process group does not reach it.
 func ownerMain(args []string) {
 	base, name := args[0], args[1]
 	if len(args) > 2 && args[2] == "memlock" {
 		_ = unix.Setrlimit(unix.RLIMIT_MEMLOCK, &unix.Rlimit{Cur: 64 << 10, Max: 64 << 10})
 	}
-	d, err := Prepare(context.Background(), testConfig(base, name, Credential{"smtp-password", []byte("hunter2")}))
+	l, err := AcquireLock(base, name)
+	if err != nil {
+		fmt.Println("error false", err)
+		return
+	}
+	d, err := Prepare(context.Background(), Config{Base: base, Name: name, UID: testUID, GID: testGID,
+		Creds: []Credential{{"smtp-password", []byte("hunter2")}}, Decrypt: fakeDecrypt, Lock: l, Executable: testExe()})
 	if err != nil {
 		fmt.Println("error", errors.Is(err, ErrMemLock), err)
 		return
 	}
-	cmd := exec.Command("/bin/sleep", "300")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd := exec.Command(testExe(), "__daemon")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Credential: &syscall.Credential{Uid: testUID, Gid: testGID}}
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		fmt.Println("error false", err)
+		return
+	}
 	if err := cmd.Start(); err != nil {
+		fmt.Println("error false", err)
+		return
+	}
+	line, err := bufio.NewReader(out).ReadString('\n')
+	if err != nil {
 		fmt.Println("error false", err)
 		return
 	}
@@ -71,7 +150,7 @@ func ownerMain(args []string) {
 		fmt.Println("error false", err)
 		return
 	}
-	fmt.Println("ready", cmd.Process.Pid, d.impl.pid)
+	fmt.Println("ready", cmd.Process.Pid, d.impl.pid, strings.TrimSpace(line))
 	select {}
 }
 
@@ -109,7 +188,7 @@ func eventually(t *testing.T, what string, ok func() bool) {
 
 func TestPrepareAndRelease(t *testing.T) {
 	base := needRoot(t)
-	d, err := Prepare(context.Background(), testConfig(base, "svc", Credential{"smtp-password", []byte("hunter2")}, Credential{"empty", nil}))
+	d, err := Prepare(context.Background(), testConfig(t, base, "svc", Credential{"smtp-password", []byte("hunter2")}, Credential{"empty", nil}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +234,7 @@ func TestPrepareRefusesExistingDir(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(base, "svc"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Prepare(context.Background(), testConfig(base, "svc"))
+	_, err := Prepare(context.Background(), testConfig(t, base, "svc"))
 	if !errors.Is(err, ErrDirExists) {
 		t.Fatalf("got %v", err)
 	}
@@ -164,10 +243,10 @@ func TestPrepareRefusesExistingDir(t *testing.T) {
 func TestCancelDuringPrepareLeavesNothing(t *testing.T) {
 	base := needRoot(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	c := testConfig(base, "svc", Credential{"a", []byte("x")})
-	spawn := defaultSpawn("")
-	c.SpawnHelper = func(argv []string, ctl *os.File) (int, error) {
-		pid, err := spawn(argv, ctl)
+	c := testConfig(t, base, "svc", Credential{"a", []byte("x")})
+	spawn := defaultSpawn(testExe())
+	c.SpawnHelper = func(argv []string, files []*os.File) (int, error) {
+		pid, err := spawn(argv, files)
 		cancel()
 		return pid, err
 	}
@@ -188,6 +267,7 @@ type owner struct {
 	cmd      *exec.Cmd
 	sleepPID int
 	helper   int
+	detached int // a process of the daemon that left its process group
 }
 
 func startOwner(t *testing.T, base, name string, extra ...string) (*owner, string) {
@@ -207,13 +287,18 @@ func startOwner(t *testing.T, base, name string, extra ...string) (*owner, strin
 		t.Fatalf("owner: %v", err)
 	}
 	f := strings.Fields(line)
-	if len(f) != 3 || f[0] != "ready" {
+	if len(f) != 4 || f[0] != "ready" {
 		return nil, strings.TrimSpace(line)
 	}
 	sp, _ := strconv.Atoi(f[1])
 	hp, _ := strconv.Atoi(f[2])
-	t.Cleanup(func() { _ = unix.Kill(sp, unix.SIGKILL); _ = unix.Kill(hp, unix.SIGKILL) })
-	return &owner{cmd, sp, hp}, ""
+	dp, _ := strconv.Atoi(f[3])
+	t.Cleanup(func() {
+		_ = unix.Kill(sp, unix.SIGKILL)
+		_ = unix.Kill(hp, unix.SIGKILL)
+		_ = unix.Kill(dp, unix.SIGKILL)
+	})
+	return &owner{cmd, sp, hp, dp}, ""
 }
 
 // The decision of the design (Q10): when the owner is killed, the daemon dies
@@ -233,8 +318,155 @@ func TestOwnerSIGKILLKillsDaemonAndUnmounts(t *testing.T) {
 	}
 	_, _ = o.cmd.Process.Wait()
 	eventually(t, "daemon killed", func() bool { return !reaped(o.sleepPID) })
+	// The daemon's child called setsid: it is in no group of the daemon's. It dies
+	// too, because the helper kills by user, not by group.
+	eventually(t, "the process that left the group is killed", func() bool { return !reaped(o.detached) })
 	eventually(t, "unmounted", func() bool { return !mounted(dir) })
 	eventually(t, "helper gone", func() bool { return !alive(o.helper) })
+}
+
+// On a normal end too: Release kills what the program left behind before the
+// credentials go.
+func TestReleaseKillsWhatTheProgramLeftBehind(t *testing.T) {
+	base := needRoot(t)
+	d, err := Prepare(context.Background(), testConfig(t, base, "svc", Credential{"a", []byte("x")}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(testExe(), "__daemon")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Credential: &syscall.Credential{Uid: testUID, Gid: testGID}}
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	line, err := bufio.NewReader(out).ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, _ := strconv.Atoi(strings.TrimSpace(line))
+	t.Cleanup(func() { _ = unix.Kill(child, unix.SIGKILL) })
+	go func() { _ = cmd.Wait() }()
+	if !alive(child) {
+		t.Fatal("setup")
+	}
+	if err := d.Release(); err != nil {
+		t.Fatal(err)
+	}
+	if alive(child) && !isZombieGone(child) {
+		t.Fatal("a process of the target survived Release")
+	}
+	if alive(cmd.Process.Pid) && !isZombieGone(cmd.Process.Pid) {
+		t.Fatal("the daemon survived Release")
+	}
+}
+
+// isZombieGone gives init a moment to reap what was killed.
+func isZombieGone(pid int) bool {
+	for i := 0; i < 100; i++ {
+		if !alive(pid) {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
+
+// A user that already has processes is refused: the delivery would kill them.
+func TestPrepareRefusesAUserThatHasProcesses(t *testing.T) {
+	base := needRoot(t)
+	cmd := exec.Command(testExe(), "__sleeper")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: testUID, Gid: testGID}}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	_, err := Prepare(context.Background(), testConfig(t, base, "svc", Credential{"a", []byte("x")}))
+	if !errors.Is(err, ErrUIDBusy) {
+		t.Fatalf("got %v, want ErrUIDBusy", err)
+	}
+	if mounted(filepath.Join(base, "svc")) {
+		t.Fatal("mounted for a user that has processes")
+	}
+	if !alive(cmd.Process.Pid) {
+		t.Fatal("the refusal killed a process")
+	}
+}
+
+// The killer refuses to run as root: kill(-1) there is every process.
+func TestKillMainRefusesRoot(t *testing.T) {
+	needRoot(t)
+	if got := KillMain([]string{"kill"}); got != killExitUsage {
+		t.Fatalf("KillMain as root returned %d", got)
+	}
+}
+
+// A mount unmounted from outside takes what runs on it down, and the helper
+// leaves; nothing is left to serve.
+func TestOutsideUnmountKillsTheTarget(t *testing.T) {
+	base := needRoot(t)
+	o, msg := startOwner(t, base, "svc")
+	if o == nil {
+		t.Fatal(msg)
+	}
+	dir := filepath.Join(base, "svc")
+	if err := unix.Unmount(dir, unix.MNT_FORCE); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the daemon is killed", func() bool { return !reaped(o.sleepPID) })
+	eventually(t, "the process that left the group is killed", func() bool { return !reaped(o.detached) })
+	eventually(t, "helper gone", func() bool { return !alive(o.helper) })
+}
+
+// The helper holds the service lock: the owner that closes it, or loses it, does
+// not let a second instance start while a helper still holds a mount.
+func TestHelperHoldsTheServiceLock(t *testing.T) {
+	base := needRoot(t)
+	c := testConfig(t, base, "svc", Credential{"a", []byte("x")})
+	d, err := Prepare(context.Background(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Release()
+	c.Lock.Close()
+	if l, err := AcquireLock(base, "svc"); !errors.Is(err, ErrBusy) {
+		if l != nil {
+			l.Close()
+		}
+		t.Fatalf("a second instance took the lock while the helper lives: %v", err)
+	}
+	if err := d.Release(); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the lock is free once the helper is gone", func() bool {
+		l, err := AcquireLock(base, "svc")
+		if err == nil {
+			l.Close()
+		}
+		return err == nil
+	})
+}
+
+// A mount that is not empty is refused: the image is empty, and something there
+// was not put there by this process.
+func TestVerifyEmptyRefusesWhatIsThere(t *testing.T) {
+	base := needRoot(t)
+	fd, err := unix.Open(base, unix.O_RDONLY|unix.O_DIRECTORY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fd)
+	if err := verifyEmpty(fd); err != nil {
+		t.Fatalf("empty directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "x"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyEmpty(fd); !errors.Is(err, ErrMount) {
+		t.Fatalf("a directory with a file: %v", err)
+	}
 }
 
 // reaped is false once the process is gone or a zombie: kill(0) succeeds on a
@@ -243,7 +475,7 @@ func reaped(pid int) bool { return alive(pid) }
 
 func TestHelperKilledClosesLostAndUnmounts(t *testing.T) {
 	base := needRoot(t)
-	d, err := Prepare(context.Background(), testConfig(base, "svc", Credential{"a", []byte("x")}))
+	d, err := Prepare(context.Background(), testConfig(t, base, "svc", Credential{"a", []byte("x")}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,8 +584,8 @@ func TestClassCapacities(t *testing.T) {
 			t.Fatal(err)
 		}
 		mine, theirs := os.NewFile(uintptr(fds[0]), "m"), os.NewFile(uintptr(fds[1]), "t")
-		a := helperArgs{Owner: os.Getpid(), Dir: dir, MiB: cl.MiB}
-		if _, err := defaultSpawn("")(append([]string{HelperCommand}, a.argv()...), theirs); err != nil {
+		a := helperArgs{Owner: os.Getpid(), Dir: dir, MiB: cl.MiB, UID: testUID, GID: testGID, Exe: testExe()}
+		if _, err := defaultSpawn(testExe())(append([]string{HelperCommand}, a.argv()...), []*os.File{theirs}); err != nil {
 			t.Fatal(err)
 		}
 		theirs.Close()

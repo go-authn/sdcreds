@@ -8,11 +8,14 @@ package main
 // refusals that must happen before a key is read. They skip elsewhere.
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/hex"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -351,7 +354,8 @@ func TestRunUsesTheHardwareUUID(t *testing.T) {
 	e := newVM(t)
 	id, err := hwUUID()
 	if err != nil {
-		t.Skip("no hw.uuid on this machine: " + err.Error())
+		// A machine without hw.uuid is a lane that proves nothing: fail, never skip.
+		t.Fatal("no hw.uuid on this machine: " + err.Error())
 	}
 	e.useHWUUID, e.machineID = true, id
 	e.hostKey(0o600)
@@ -359,5 +363,229 @@ func TestRunUsesTheHardwareUUID(t *testing.T) {
 	e.program(`cat "$CREDENTIALS_DIRECTORY/smtp-password"`)
 	if so, se, code := e.result(); code != 0 || so != "from-uuid" {
 		t.Errorf("exit %d %q %q", code, so, se)
+	}
+}
+
+// detachScript starts a process that leaves the program's process group and
+// session, the way a daemon does, and prints its pid once it has done so (a pid
+// printed earlier could be of a process still in the group).
+const detachScript = `perl -MPOSIX -e 'POSIX::setsid() or die; $| = 1; print "$$\n"; exec "sleep", "300"' </dev/null 2>&1 &
+`
+
+// firstPIDs starts c and reads n pids, one per line, from its stdout.
+func firstPIDs(t *testing.T, c *exec.Cmd, n int) []int {
+	t.Helper()
+	out, err := c.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Start(); err != nil {
+		t.Fatal(err)
+	}
+	sc := bufio.NewScanner(out)
+	var pids []int
+	for len(pids) < n && sc.Scan() {
+		p, err := strconv.Atoi(strings.TrimSpace(sc.Text()))
+		if err != nil {
+			t.Fatalf("not a pid: %q", sc.Text())
+		}
+		pids = append(pids, p)
+	}
+	if len(pids) != n {
+		t.Fatalf("read %d pids, want %d", len(pids), n)
+	}
+	return pids
+}
+
+// B1: a daemon that leaves the group and the session still dies with sdcreds.
+func TestRunSIGKILLKillsAProcessThatLeftTheSession(t *testing.T) {
+	e := newVM(t)
+	e.program(`echo $$
+` + detachScript + `exec sleep 300`)
+	c := e.command()
+	pids := firstPIDs(t, c, 2)
+	main, detached := pids[0], pids[1]
+	t.Cleanup(func() { _ = syscall.Kill(detached, syscall.SIGKILL); _ = syscall.Kill(main, syscall.SIGKILL) })
+	if !alive(detached) || !alive(main) {
+		t.Fatal("setup: the program is not running")
+	}
+	if err := syscall.Kill(c.Process.Pid, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	_ = c.Wait()
+	waitGone(t, main)
+	waitGone(t, detached)
+	e.nothingMounted()
+}
+
+// B1: on a normal end, what the program left behind dies before the credentials
+// go.
+func TestRunKillsWhatTheProgramLeftBehind(t *testing.T) {
+	e := newVM(t)
+	e.program(detachScript + `sleep 2
+exit 0`)
+	so, se, code := e.result()
+	if code != 0 {
+		t.Fatalf("exit %d: %s", code, se)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(so))
+	if err != nil {
+		t.Fatalf("stdout %q", so)
+	}
+	waitGone(t, pid)
+	e.nothingMounted()
+}
+
+// F1: the helper is gone: sdcreds kills the program and exits non-zero.
+func TestRunFailsAndKillsWhenTheHelperIsGone(t *testing.T) {
+	e := newVM(t)
+	e.program(`echo $$
+` + detachScript + `exec sleep 300`)
+	c := e.command()
+	var se bytes.Buffer
+	c.Stderr = &se
+	pids := firstPIDs(t, c, 2)
+	main, detached := pids[0], pids[1]
+	t.Cleanup(func() { _ = syscall.Kill(detached, syscall.SIGKILL); _ = syscall.Kill(main, syscall.SIGKILL) })
+	// find the helper: a child of sdcreds that runs the helper command on this base.
+	out, err := exec.Command("pgrep", "-f", delivery.HelperCommand+".*"+e.base).Output()
+	if err != nil {
+		t.Fatalf("no helper found: %v", err)
+	}
+	helper, err := strconv.Atoi(strings.Fields(string(out))[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Kill(helper, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- c.Wait() }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("sdcreds exited 0 after the delivery was lost")
+		}
+	case <-time.After(30 * time.Second):
+		_ = c.Process.Kill()
+		t.Fatal("sdcreds did not end after the helper was killed")
+	}
+	waitGone(t, main)
+	waitGone(t, detached)
+	if !strings.Contains(se.String(), "delivery lost") {
+		t.Errorf("stderr does not say why: %q", se.String())
+	}
+	e.nothingMounted()
+}
+
+// The user that already has processes is refused, nothing is killed.
+func TestRunRefusesATargetThatHasProcesses(t *testing.T) {
+	e := newVM(t)
+	pre := exec.Command("sleep", "300")
+	u, err := user.Lookup(targetUser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uid, _ := strconv.Atoi(u.Uid)
+	gid, _ := strconv.Atoi(u.Gid)
+	pre.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid)}}
+	if err := pre.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pre.Process.Kill(); _ = pre.Wait() })
+	e.program(`echo ran`)
+	so, _, code := e.result()
+	if code == 0 || strings.Contains(so, "ran") {
+		t.Errorf("a busy target was served: exit %d %q", code, so)
+	}
+	if !alive(pre.Process.Pid) {
+		t.Error("the refusal killed a process")
+	}
+}
+
+// --class: the limits of the class reach the program, and nothing else of the
+// class does. The class is a file of login.conf.d, which wins over login.conf.
+func TestRunAppliesTheLimitsOfTheClass(t *testing.T) {
+	e := newVM(t)
+	const class = "sdcredstest"
+	file := "/etc/login.conf.d/" + class
+	if err := os.MkdirAll("/etc/login.conf.d", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte(class+":\\\n\t:openfiles-cur=77:\\\n\t:openfiles-max=88:\\\n\t:coredumpsize=0:\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Remove(file) })
+	e.program(`echo "soft $(ulimit -Sn) hard $(ulimit -Hn) core $(ulimit -Sc)"`)
+	so, se, code := e.result("--class=" + class)
+	if code != 0 || !strings.Contains(so, "soft 77 hard 88 core 0") {
+		t.Errorf("exit %d stdout %q stderr %q", code, so, se)
+	}
+	// a class whose value cannot be read refuses before anything is mounted
+	if err := os.WriteFile(file, []byte(class+":openfiles=lots:\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	so, se, code = e.result("--class=" + class)
+	if code == 0 || so != "" || !strings.Contains(se, "lots") {
+		t.Errorf("a bad limit: exit %d stdout %q stderr %q", code, so, se)
+	}
+	e.nothingMounted()
+	// a class file that anyone can write is refused
+	if err := os.WriteFile(file, []byte(class+":openfiles=77:\n"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(file, 0o666); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, code = e.result("--class=" + class); code == 0 {
+		t.Error("a world-writable class file was used")
+	}
+}
+
+// The program gets a short allow-listed environment.
+func TestRunEnvironmentIsAllowListed(t *testing.T) {
+	e := newVM(t)
+	e.program(`env`)
+	c := e.command()
+	c.Env = []string{"PATH=/evil", "LD_LIBRARY_PATH=/evil", "SECRET_TOKEN=x", "LANG=C", "TERM=vt100", "HOME=/root"}
+	var o, er bytes.Buffer
+	c.Stdout, c.Stderr = &o, &er
+	if err := c.Run(); err != nil {
+		t.Fatalf("%v %s", err, er.String())
+	}
+	for _, bad := range []string{"/evil", "SECRET_TOKEN", "HOME=", "__SDCREDS"} {
+		if strings.Contains(o.String(), bad) {
+			t.Errorf("the program sees %q:\n%s", bad, o.String())
+		}
+	}
+	for _, want := range []string{"LANG=C", "TERM=vt100", "CREDENTIALS_DIRECTORY=" + e.base + "/web"} {
+		if !strings.Contains(o.String(), want) {
+			t.Errorf("the program lacks %q:\n%s", want, o.String())
+		}
+	}
+}
+
+// `sdcreds sweep` removes a leftover without starting the service.
+func TestSweepCommand(t *testing.T) {
+	e := newVM(t)
+	if err := os.MkdirAll(e.base, 0o711); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(e.base, "web"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.base, ".web.lock"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command(e.bin, "sweep", "--base="+e.base).CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "swept "+e.base+"/web") {
+		t.Fatalf("%v %s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(e.base, "web")); err == nil {
+		t.Error("the leftover directory is still there")
+	}
+	out, err = exec.Command(e.bin, "sweep", "--base="+e.base).CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "nothing to sweep") {
+		t.Errorf("second sweep: %v %s", err, out)
 	}
 }

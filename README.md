@@ -197,23 +197,41 @@ ends. On Linux it is `s6-run` with the same flags. `--check` runs every refusal 
 nothing (use it in an rc.d `rc_pre`). A refusal exits with status 2 and happens before the host
 key is read.
 
-On OpenBSD the files live in a memory file system (MFS) mounted for the service, in a region
-that is locked in memory and zeroed at the end. What to know:
+On OpenBSD the files live in a memory file system (MFS) mounted for the service, zeroed at the
+end. What to know:
 
 * **There is no mount namespace.** While the program runs the credentials are visible to every
   process that can reach the directory, and root can always read them.
 * **The host key** is `/etc/sdcreds/host.key`, owned by root, mode 0600; any other mode or
   owner is refused. Create it with `sdcreds setup --path /etc/sdcreds/host.key`, then
-  `chmod 600` it. The machine id is `sysctl hw.uuid` (`--secret` and `--machine-id-file`
-  override both).
-* **`--user` is never root**, whatever its name; there is no flag to allow it. The program
-  must be an absolute, normalised path that the user can execute.
-* **Killing sdcreds kills the program** and unmounts, even with SIGKILL: a helper process
-  watches sdcreds and kills the program's process group first. A program that leaves its
-  process group (setsid) escapes that kill. If sdcreds and the helper both die, the leftover
-  is swept at the next start.
-* **`--class`** is checked against `/etc/login.conf` but its limits are **not** applied to
-  the program.
+  `chmod 600` it. The machine id is `sysctl hw.uuid`. `--secret` and `--machine-id-file`
+  override both; they are kept on purpose and go through the same ownership and mode checks.
+* **`--user` is never root**: uid 0, gid 0 and any supplementary group 0 are refused, in `run`
+  and in the library (`s6.Run`, `delivery`); there is no flag to allow it. The program must be
+  an absolute, normalised path that the user can execute.
+* **Killing sdcreds kills the program** and unmounts, even with SIGKILL. A helper process
+  holds the service lock and watches sdcreds; on any end it kills everything the service user
+  runs (by uid, so a program that called setsid does not escape) and then unmounts. Because the
+  kill is by uid, `run` refuses a user that already has other processes: give the service its
+  own user. A fork bomb is bounded by the class's `maxproc`, not by sdcreds. If sdcreds and the
+  helper both die, `sdcreds sweep [--base DIR] [--service S]` (or the next start of the service)
+  removes the leftover. When the helper is lost while the program runs, sdcreds kills the
+  program and exits non-zero.
+* **`--class`** is looked up in `/etc/login.conf.d/<class>` first, then `/etc/login.conf`
+  (`tc=` chains, `-cur`/`-max`, `@` negation); `login.conf.db` is not consulted. The resource
+  limits of the class are applied to the program, only ever lowering what it would have, and a
+  class that cannot be read or parsed is a refusal. Priority and umask are not applied; the
+  program gets umask 077.
+* **The program's environment is an allow-list**: PATH (a fixed default), CREDENTIALS_DIRECTORY,
+  LANG, TZ, TERM and LC_*. Descriptors above 2 are closed before it runs.
+* **Memory.** The plaintext is in the memory of the sdcreds process (Go heap) for a short time,
+  and in the buffer cache of the MFS no more than the file system holds. `mlockall` cannot be
+  used from a Go process on OpenBSD (it fails with ENOMEM at the default and at the hard
+  RLIMIT_MEMLOCK, measured on 8.0), so the region is not locked: protection is
+  `vm.swapencrypt.enable` (on by default), core dumps off (RLIMIT_CORE 0 in sdcreds and the
+  helper) and `kern.nosuidcoredump`. A crash dump taken by an administrator can still contain
+  the plaintext. The buffer cache and the heap were not inspected for residue after the end.
+* `setlogin` is not called: the program runs as the target user, which cannot call it.
 * `--keep-cap` is Linux only.
 
 `docs/openbsd/authn_bridge` is an rc.d script that runs go-authn/bridge this way

@@ -268,6 +268,20 @@ func TestPrepareRefusesBeforeTheHelper(t *testing.T) {
 	if _, err := Prepare(ctx, goodConfig()); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled context: %v", err)
 	}
+	// The helper inherits the service lock and runs a program that the caller
+	// named by an absolute path: neither is guessed.
+	c = goodConfig()
+	c.Lock = nil
+	if _, err := Prepare(context.Background(), c); !errors.Is(err, ErrNoLock) {
+		t.Fatalf("no lock: %v", err)
+	}
+	for _, exe := range []string{"", "sdcreds", "./sdcreds", "/usr/local/bin/../bin/sdcreds", "/usr/local/bin/"} {
+		c = goodConfig()
+		c.Executable = exe
+		if _, err := Prepare(context.Background(), c); !errors.Is(err, ErrNoExecutable) {
+			t.Fatalf("executable %q: %v", exe, err)
+		}
+	}
 }
 
 func TestGuardGroupOfNilSaysSo(t *testing.T) {
@@ -278,7 +292,8 @@ func TestGuardGroupOfNilSaysSo(t *testing.T) {
 }
 
 func TestHelperArgsSizeMessage(t *testing.T) {
-	_, err := parseHelperArgs([]string{"--owner", "42", "--dir", "/a", "--mib", "x"})
+	_, err := parseHelperArgs([]string{"--owner", "42", "--dir", "/a", "--mib", "x",
+		"--uid", "1000", "--gid", "1000", "--groups", "", "--exe", "/x"})
 	if err == nil || !strings.Contains(err.Error(), "bad size") {
 		t.Fatal(err)
 	}

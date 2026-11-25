@@ -218,6 +218,27 @@ func TestRunWithoutUnshare(t *testing.T) {
 	}
 }
 
+func TestRunRefusesARootServiceIdentity(t *testing.T) {
+	for name, u := range map[string]User{
+		"uid 0":       {UID: 0, GID: 100},
+		"gid 0":       {UID: 100, GID: 0},
+		"group 0":     {UID: 100, GID: 100, Groups: []int{5, 0}},
+		"negative id": {UID: -1, GID: 100},
+	} {
+		r, c := newRig(t), config(t)
+		r.user = u
+		err := Run(c, r.ops())
+		if !errors.Is(err, ErrRootService) || slices.Contains(r.calls, "unshare") || slices.Contains(r.calls, "mount") {
+			t.Errorf("%s: %v %v", name, err, r.calls)
+		}
+	}
+	r, c := newRig(t), config(t)
+	r.user = User{UID: 100, GID: 100, Groups: []int{5, 6}}
+	if err := Run(c, r.ops()); errors.Is(err, ErrRootService) {
+		t.Errorf("an ordinary identity was refused: %v", err)
+	}
+}
+
 func TestRunValidation(t *testing.T) {
 	for name, mod := range map[string]func(*Config){
 		"bad service":      func(c *Config) { c.Service = "a/b" },

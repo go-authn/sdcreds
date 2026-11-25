@@ -5,9 +5,11 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -491,10 +493,16 @@ func TestEnvWithout(t *testing.T) {
 // The exec stub runs the program only after the go byte; EOF or anything else
 // exits without running it.
 func TestExecGate(t *testing.T) {
-	oldExec, oldGate := execProgram, gateFile
-	t.Cleanup(func() { execProgram, gateFile = oldExec, oldGate })
-	var ran []string
+	oldExec, oldGate, oldClose, oldUmask, oldLimits := execProgram, gateFile, closeFrom, umask, limitsApply
+	t.Cleanup(func() {
+		execProgram, gateFile, closeFrom, umask, limitsApply = oldExec, oldGate, oldClose, oldUmask, oldLimits
+	})
+	limitsApply = func(ls []classRlimit) error { return nil }
+	var ran, steps []string
+	closeFrom = func(from int) { steps = append(steps, fmt.Sprintf("closefrom %d", from)) }
+	umask = func(m int) { steps = append(steps, fmt.Sprintf("umask %o", m)) }
 	execProgram = func(p string, argv []string, env []string) error {
+		steps = append(steps, "exec")
 		ran = append([]string{p}, argv...)
 		return errors.New("exec seam")
 	}
@@ -513,6 +521,12 @@ func TestExecGate(t *testing.T) {
 		strings.Join(ran, " ") != "/bin/p /bin/p a b" {
 		t.Errorf("go: %v %q", err, ran)
 	}
+	// Nothing the stub held reaches the program: descriptors closed, umask
+	// private, both before the exec.
+	if got := strings.Join(steps, ","); got != "closefrom 3,umask 77,exec" {
+		t.Errorf("steps before exec: %s", got)
+	}
+	steps = nil
 	// EOF: the owner died.
 	ran = nil
 	withGate(func(w *os.File) { w.Close() })
@@ -530,11 +544,14 @@ func TestExecGate(t *testing.T) {
 			t.Errorf("%q: %v", a, err)
 		}
 	}
+	if len(steps) != 0 {
+		t.Errorf("a refused gate still ran %v", steps)
+	}
 }
 
 func TestHelperCommandsAreHidden(t *testing.T) {
 	root := RootCmd()
-	for _, n := range []string{stubCommand, delivery.HelperCommand} {
+	for _, n := range []string{stubCommand, delivery.HelperCommand, delivery.KillCommand} {
 		c, _, err := root.Find([]string{n})
 		if err != nil || c.Name() != n || !c.Hidden || !c.DisableFlagParsing {
 			t.Errorf("%s: %v %+v", n, err, c)
@@ -544,5 +561,128 @@ func TestHelperCommandsAreHidden(t *testing.T) {
 	// an exec stub with no program refuses.
 	if _, _, err := run(t, "", stubCommand); err == nil {
 		t.Error("stub without program accepted")
+	}
+}
+
+func TestStubEnvKeepsOnlyAllowedNames(t *testing.T) {
+	got := stubEnv([]string{
+		"PATH=/evil", "LD_PRELOAD=/x", "LANG=fr_FR.UTF-8", "LC_ALL=C", "LCX=1", "TERM=xterm",
+		"TZ=UTC", "HOME=/root", "SSH_AUTH_SOCK=/s", "CREDENTIALS_DIRECTORY=/old", "NOEQUALS",
+	}, "/new")
+	want := "PATH=" + defaultPath + ",CREDENTIALS_DIRECTORY=/new,LANG=fr_FR.UTF-8,LC_ALL=C,TERM=xterm,TZ=UTC"
+	if strings.Join(got, ",") != want {
+		t.Errorf("got %q, want %s", got, want)
+	}
+}
+
+// The class limits are applied before the exec; the variable that carried them
+// does not reach the program; a limit that cannot be applied stops the run.
+func TestExecGateAppliesClassLimits(t *testing.T) {
+	oldExec, oldGate, oldClose, oldUmask, oldLimits := execProgram, gateFile, closeFrom, umask, limitsApply
+	t.Cleanup(func() {
+		execProgram, gateFile, closeFrom, umask, limitsApply = oldExec, oldGate, oldClose, oldUmask, oldLimits
+	})
+	closeFrom, umask = func(int) {}, func(int) {}
+	var applied []classRlimit
+	var execEnv []string
+	execed := false
+	limitsApply = func(ls []classRlimit) error { applied = ls; return nil }
+	execProgram = func(p string, argv, env []string) error { execed, execEnv = true, env; return errors.New("seam") }
+	feed := func() {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		gateFile = func() *os.File { return r }
+		w.Write([]byte{goByte})
+		w.Close()
+	}
+
+	t.Setenv(rlimitEnv, "nofile=64:128,core=0:0")
+	feed()
+	if err := execGate([]string{"--", "/bin/p"}); err == nil || !strings.Contains(err.Error(), "seam") || !execed {
+		t.Fatalf("exec did not happen: %v", err)
+	}
+	if got := EncodeLimits(applied); got != "core=0:0,nofile=64:128" && got != "nofile=64:128,core=0:0" {
+		t.Errorf("applied %q", got)
+	}
+	for _, e := range execEnv {
+		if strings.HasPrefix(e, rlimitEnv+"=") {
+			t.Errorf("the program inherits %s", e)
+		}
+	}
+
+	// refusals: the program does not run.
+	for name, c := range map[string]struct {
+		spec  string
+		apply func([]classRlimit) error
+	}{
+		"junk spec":     {"nofile=x:y", func([]classRlimit) error { return nil }},
+		"apply fails":   {"nofile=1:1", func([]classRlimit) error { return errors.New("EPERM") }},
+		"unknown field": {"bogus=1:1", func([]classRlimit) error { return nil }},
+	} {
+		execed = false
+		limitsApply = c.apply
+		t.Setenv(rlimitEnv, c.spec)
+		feed()
+		if err := execGate([]string{"--", "/bin/p"}); err == nil || execed {
+			t.Errorf("%s: err %v, exec ran: %v", name, err, execed)
+		}
+	}
+}
+
+func TestApplyLimitsOnlyLowersAndClampsAndFailsClosed(t *testing.T) {
+	oldGet, oldSet := getrlimit, setrlimit
+	t.Cleanup(func() { getrlimit, setrlimit = oldGet, oldSet })
+	getrlimit = func(id int, r *syscall.Rlimit) error { r.Cur, r.Max = 100, 1000; return nil }
+	var set syscall.Rlimit
+	setrlimit = func(id int, r *syscall.Rlimit) error { set = *r; return nil }
+	run := func(cur, max limitValue) syscall.Rlimit {
+		t.Helper()
+		if err := applyLimits([]classRlimit{{Resource: "nofile", Cur: cur, Max: max}}); err != nil {
+			t.Fatal(err)
+		}
+		return set
+	}
+	if r := run(limitValue{Set: true, N: 50}, limitValue{Set: true, N: 500}); r.Cur != 50 || r.Max != 500 {
+		t.Errorf("lower both: %+v", r)
+	}
+	if r := run(limitValue{Set: true, N: 5000}, limitValue{Set: true, N: 9000}); r.Cur != 1000 || r.Max != 1000 {
+		t.Errorf("above the hard limit is clamped to it: %+v", r)
+	}
+	if r := run(limitValue{Set: true, Inf: true}, limitValue{}); r.Cur != 1000 || r.Max != 1000 {
+		t.Errorf("infinity is the hard limit: %+v", r)
+	}
+	if r := run(limitValue{}, limitValue{Set: true, N: 10}); r.Cur != 10 || r.Max != 10 {
+		t.Errorf("a lower hard limit pulls the soft one down: %+v", r)
+	}
+	setrlimit = func(int, *syscall.Rlimit) error { return errors.New("EINVAL") }
+	if err := applyLimits([]classRlimit{{Resource: "nofile", Cur: limitValue{Set: true, N: 1}}}); err == nil {
+		t.Error("a setrlimit failure was swallowed")
+	}
+	getrlimit = func(int, *syscall.Rlimit) error { return errors.New("EINVAL") }
+	if err := applyLimits([]classRlimit{{Resource: "nofile", Cur: limitValue{Set: true, N: 1}}}); err == nil {
+		t.Error("a getrlimit failure was swallowed")
+	}
+	if err := applyLimits([]classRlimit{{Resource: "bogus"}}); err == nil {
+		t.Error("an unknown resource was accepted")
+	}
+}
+
+// sweep is a command of every build; off OpenBSD it refuses and says why.
+func TestSweepRefusesWhereThereIsNothingToSweep(t *testing.T) {
+	oldExit := osExit
+	t.Cleanup(func() { osExit = oldExit })
+	code := -1
+	osExit = func(c int) { code = c }
+	for _, args := range [][]string{{"sweep"}, {"sweep", "--service=web"}} {
+		_, se, _ := run(t, "", append(args, "--base="+t.TempDir())...)
+		if runtime.GOOS != "openbsd" && (code != exitRefused || !strings.Contains(se, "sdcreds sweep")) {
+			t.Errorf("%v: exit %d stderr %q", args, code, se)
+		}
+		code = -1
+	}
+	if _, _, err := run(t, "", "sweep", "extra"); err == nil {
+		t.Error("sweep took an argument")
 	}
 }

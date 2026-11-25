@@ -45,6 +45,9 @@ var ErrUnsupported = errors.New("s6: not supported on " + runtime.GOOS)
 var ErrNotMounted = errors.New("s6: not a mount point")
 
 // User is a resolved service account.
+// ErrRootService is the refusal to run a service as uid 0, gid 0 or with group 0.
+var ErrRootService = errors.New("s6: the service must not run as root or with group 0")
+
 type User struct {
 	UID, GID int
 	Groups   []int
@@ -275,6 +278,16 @@ func Run(c Config, ops Ops) (err error) {
 	u, err := ops.LookupUser(c.User)
 	if err != nil {
 		return fmt.Errorf("s6: user %q: %w", c.User, err)
+	}
+	// The service never runs as root, as group 0 or with group 0, whoever called
+	// Run: the refusal lives here and not only in the command line plan.
+	if u.UID <= 0 || u.GID <= 0 {
+		return fmt.Errorf("%w: user %q has uid %d gid %d", ErrRootService, c.User, u.UID, u.GID)
+	}
+	for _, g := range u.Groups {
+		if g <= 0 {
+			return fmt.Errorf("%w: user %q is in group %d", ErrRootService, c.User, g)
+		}
 	}
 	u.Keep = c.KeepCaps
 	// A command that cannot be found is learned before anything is mounted: after
