@@ -188,6 +188,38 @@ unchanged; the interop test reads `/proc/self/status` of the service and of
   until `sdcreds s6-finish` runs (put it in the finish script of the service). The
   default, a private namespace, has no such leftover.
 
+## `sdcreds run`: OpenBSD (and Linux)
+
+`sdcreds run --service=web --user=svc --source=/etc/creds [--class=daemon] -- /usr/local/bin/web`
+decrypts the sealed files of `--source`, makes them visible to the program as read-only files
+owned by `--user` under `$CREDENTIALS_DIRECTORY`, runs it as that user and removes them when it
+ends. On Linux it is `s6-run` with the same flags. `--check` runs every refusal and decrypts
+nothing (use it in an rc.d `rc_pre`). A refusal exits with status 2 and happens before the host
+key is read.
+
+On OpenBSD the files live in a memory file system (MFS) mounted for the service, in a region
+that is locked in memory and zeroed at the end. What to know:
+
+* **There is no mount namespace.** While the program runs the credentials are visible to every
+  process that can reach the directory, and root can always read them.
+* **The host key** is `/etc/sdcreds/host.key`, owned by root, mode 0600; any other mode or
+  owner is refused. Create it with `sdcreds setup --path /etc/sdcreds/host.key`, then
+  `chmod 600` it. The machine id is `sysctl hw.uuid` (`--secret` and `--machine-id-file`
+  override both).
+* **`--user` is never root**, whatever its name; there is no flag to allow it. The program
+  must be an absolute, normalised path that the user can execute.
+* **Killing sdcreds kills the program** and unmounts, even with SIGKILL: a helper process
+  watches sdcreds and kills the program's process group first. A program that leaves its
+  process group (setsid) escapes that kill. If sdcreds and the helper both die, the leftover
+  is swept at the next start.
+* **`--class`** is checked against `/etc/login.conf` but its limits are **not** applied to
+  the program.
+* `--keep-cap` is Linux only.
+
+`docs/openbsd/authn_bridge` is an rc.d script that runs go-authn/bridge this way
+(`authn-bridge serve --config /etc/authn-bridge`, user `authn-bridge`, credential
+`smtp-password`). The delivery is also a library, package `delivery`.
+
 ## Safety
 
 Every length is checked before it is used, before anything is allocated, and

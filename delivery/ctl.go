@@ -111,18 +111,21 @@ func sanitize(s string) string {
 // error and nothing more is read of it.
 func readCtl(r *bufio.Reader) (Ctl, error) {
 	var line []byte
-	for {
+	// Every pass takes at least one byte or ends on an error, so the loop is
+	// bounded by the line limit; the bound is explicit so that no change of the
+	// tests below can turn a lost check into a hang.
+	for i := 0; i < maxCtlLine+2; i++ {
 		chunk, err := r.ReadSlice('\n')
 		line = append(line, chunk...)
 		if len(line) > maxCtlLine+1 {
-			return Ctl{}, fmt.Errorf("%w: too long", ErrCtl)
+			break
 		}
 		if err == nil {
-			break
+			return ParseCtl(strings.TrimSuffix(string(line), "\n"))
 		}
 		if !errors.Is(err, bufio.ErrBufferFull) {
 			return Ctl{}, err
 		}
 	}
-	return ParseCtl(strings.TrimSuffix(string(line), "\n"))
+	return Ctl{}, fmt.Errorf("%w: too long", ErrCtl)
 }

@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -76,7 +75,7 @@ func TestReadSourceEachRefusal(t *testing.T) {
 		if err := os.Symlink("/etc/passwd", filepath.Join(dir, "l")); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := ReadSource(dir); err == nil || !strings.Contains(err.Error(), "symbolic link") {
+		if _, err := ReadSource(dir); err == nil || !strings.Contains(err.Error(), "is not a regular file (a symbolic link") {
 			t.Fatal(err)
 		}
 	})
@@ -152,21 +151,33 @@ func TestParseCtlLengthAndDigits(t *testing.T) {
 	}
 }
 
-// slow hands out one byte at a time of an endless line.
-type endless struct{ reads int }
+// endless hands out one byte at a time of an endless line, up to max reads.
+type endless struct{ reads, max int }
 
 func (e *endless) Read(p []byte) (int, error) {
+	if e.reads >= e.max {
+		return 0, io.EOF
+	}
 	e.reads++
 	p[0] = 'a'
 	return 1, nil
 }
 
-type failing struct{ sent bool }
+// failing sends "ab", then fails with ErrUnexpectedEOF on every call, up to
+// max calls after which it reports EOF (so a loop that ignores the error ends).
+type failing struct {
+	sent       bool
+	calls, max int
+}
 
 func (f *failing) Read(p []byte) (int, error) {
 	if !f.sent {
 		f.sent = true
 		return copy(p, "ab"), nil
+	}
+	f.calls++
+	if f.calls > f.max {
+		return 0, io.EOF
 	}
 	return 0, io.ErrUnexpectedEOF
 }
@@ -183,7 +194,9 @@ func TestReadCtlBounds(t *testing.T) {
 		t.Fatalf("one over the bound: %v", err)
 	}
 	// an endless line is refused after a bounded number of reads.
-	e := &endless{}
+	// (the readers stop themselves after a cap, so a loop that lost its bound
+	// fails the test instead of hanging it.)
+	e := &endless{max: 100 * maxCtlLine}
 	if _, err := readCtl(bufio.NewReaderSize(e, 16)); !errors.Is(err, ErrCtl) {
 		t.Fatalf("endless: %v", err)
 	}
@@ -191,18 +204,12 @@ func TestReadCtlBounds(t *testing.T) {
 		t.Fatalf("read %d bytes of an endless line", e.reads)
 	}
 	// a read error ends the read and is returned as it is.
-	done := make(chan error, 1)
-	go func() {
-		_, err := readCtl(bufio.NewReaderSize(&failing{}, 16))
-		done <- err
-	}()
-	select {
-	case err := <-done:
-		if !errors.Is(err, io.ErrUnexpectedEOF) {
-			t.Fatalf("read error: %v", err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("readCtl does not stop on a read error")
+	f := &failing{max: 1000}
+	if _, err := readCtl(bufio.NewReaderSize(f, 16)); !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("read error: %v", err)
+	}
+	if f.calls > 10 {
+		t.Fatalf("readCtl read again %d times after an error", f.calls)
 	}
 }
 
