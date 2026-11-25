@@ -168,6 +168,12 @@ func validate(c Config, euid int) error {
 	return nil
 }
 
+// Check runs every refusal of Prepare that needs neither the system nor a
+// secret, except ErrNotRoot (the caller tests its own uid), and changes
+// nothing. A caller that wants to refuse before it reads a key (sdcreds run
+// --check) calls it.
+func Check(c Config) error { return validate(c, 0) }
+
 // wipe overwrites the plaintext.
 func wipe(bs [][]byte) {
 	for _, b := range bs {

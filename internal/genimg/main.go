@@ -1,7 +1,11 @@
+//go:build ignore
+
 // Command genimg writes the empty FFS images that delivery embeds, one per size
 // class, with the real newfs(8) on a vnd(4) device. It runs as root on OpenBSD:
 //
-//	go run ./internal/genimg -out delivery/images
+//	go run internal/genimg/main.go -out delivery/images
+//
+// It is excluded from every build (a generator, not a shipped program).
 //
 // OpenBSD's newfs refuses a regular file and the kernel mounts an MFS from an
 // image of the file system laid out in memory, so the image is made once here
