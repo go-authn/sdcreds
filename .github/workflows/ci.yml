@@ -107,12 +107,12 @@ jobs:
           run: |
             set -eu
             uname -a
-            doas -n sysctl hw.uuid || true
-            doas -n install -d -o root -g wheel -m 755 /usr/local/libexec/sdcreds-ci
-            doas -n install -o root -g wheel -m 755 obsd/sdcreds /usr/local/libexec/sdcreds-ci/sdcreds
+            sudo -n sysctl hw.uuid || true
+            sudo -n install -d -o root -g wheel -m 755 /usr/local/libexec/sdcreds-ci
+            sudo -n install -o root -g wheel -m 755 obsd/sdcreds /usr/local/libexec/sdcreds-ci/sdcreds
             chmod 755 obsd/run.test obsd/delivery.test
-            doas -n ./obsd/delivery.test -test.v -test.timeout 5m
-            doas -n env SDCREDS_BIN=/usr/local/libexec/sdcreds-ci/sdcreds ./obsd/run.test -test.v -test.timeout 5m
+            sudo -n ./obsd/delivery.test -test.v -test.timeout 5m
+            sudo -n env SDCREDS_BIN=/usr/local/libexec/sdcreds-ci/sdcreds ./obsd/run.test -test.v -test.timeout 5m
 
   fuzz:
     name: fuzz ${{ matrix.target }}
