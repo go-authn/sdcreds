@@ -177,10 +177,7 @@ func plan(f runFlags, argv []string) (*runPlan, error) {
 // clampID turns a parsed number into one ValidID can judge on any int size: a
 // value above the 32-bit range is passed as the largest, which it refuses.
 func clampID(n uint64) int64 {
-	if n >= 0xFFFFFFFF {
-		return 0xFFFFFFFF
-	}
-	return int64(n)
+	return int64(min(n, 0xFFFFFFFF))
 }
 
 func checkClass(class string) error {

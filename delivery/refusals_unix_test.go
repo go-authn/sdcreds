@@ -164,6 +164,22 @@ func TestReadSourceBoundsTheSealedTotal(t *testing.T) {
 	}
 }
 
+func TestReadSourceReportsAFailedDirectoryRead(t *testing.T) {
+	trustTemp(t)
+	dir := t.TempDir()
+	boom := errors.New("boom")
+	old := readDir
+	t.Cleanup(func() { readDir = old })
+	readDir = func(*os.File, int) ([]os.DirEntry, error) { return nil, boom }
+	if _, err := ReadSource(dir); !errors.Is(err, boom) {
+		t.Fatalf("a failed read of the directory: %v", err)
+	}
+	readDir = old
+	if got, err := ReadSource(dir); err != nil || len(got) != 0 {
+		t.Fatalf("an empty directory: %v %v", got, err)
+	}
+}
+
 func TestANilLockHoldsNoDescriptor(t *testing.T) {
 	var l *Lock
 	if l.file() != nil {

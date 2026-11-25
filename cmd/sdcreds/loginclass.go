@@ -59,9 +59,6 @@ func loginEntries(data string) map[string][]string {
 	flush := func() {
 		text := rec.String()
 		rec.Reset()
-		if text == "" {
-			return
-		}
 		fields := strings.Split(text, ":")
 		var caps []string
 		for _, f := range fields[1:] {
@@ -107,9 +104,7 @@ func parseLimitValue(resource, v string) (limitValue, error) {
 	for i < len(v) && v[i] >= '0' && v[i] <= '9' {
 		i++
 	}
-	if i == 0 {
-		return limitValue{}, fmt.Errorf("%w: %s=%q", errClassLimit, resource, v)
-	}
+	// an empty digit run is ParseUint's error: "" and "k" are refused there
 	n, err := strconv.ParseUint(v[:i], 10, 63)
 	if err != nil {
 		return limitValue{}, fmt.Errorf("%w: %s=%q", errClassLimit, resource, v)

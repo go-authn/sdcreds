@@ -58,7 +58,7 @@ func ReadSourceTrusted(dir string, owner uint32, from string) ([]Credential, err
 	}
 	d := os.NewFile(uintptr(fd), dir)
 	defer d.Close()
-	ents, err := d.ReadDir(MaxEntries + 1)
+	ents, err := readDir(d, MaxEntries+1)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
 	}
@@ -92,6 +92,7 @@ func ReadSourceTrusted(dir string, owner uint32, from string) ([]Credential, err
 // Seams for the tests: an open descriptor that cannot be made to fail to stat
 // or to read on a real system.
 var (
+	readDir  = func(d *os.File, n int) ([]os.DirEntry, error) { return d.ReadDir(n) }
 	statFile = func(f *os.File) (os.FileInfo, error) { return f.Stat() }
 	readFile = func(f *os.File) ([]byte, error) { return io.ReadAll(io.LimitReader(f, maxArmoured+1)) }
 )
