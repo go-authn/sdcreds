@@ -150,13 +150,9 @@ func TestDecryptAll(t *testing.T) {
 }
 
 func TestNilDeliveryIsSafe(t *testing.T) {
+	// Release and Lost of nil are asserted in TestNilDeliveryAndLockAreSafe,
+	// which reports a crash as a failed assertion instead of ending the binary.
 	var d *Delivery
-	if err := d.Release(); err != nil {
-		t.Fatal(err)
-	}
-	if d.Lost() != nil {
-		t.Fatal("Lost of nil")
-	}
 	if err := d.GuardGroup(5); err == nil {
 		t.Fatal("GuardGroup of nil")
 	}

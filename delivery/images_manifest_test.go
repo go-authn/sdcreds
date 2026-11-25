@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -80,7 +81,7 @@ func TestVerifyImageRefusesAChangedImage(t *testing.T) {
 	if err := verifyImage(1, nil); !errors.Is(err, ErrImageDigest) {
 		t.Fatalf("empty: %v", err)
 	}
-	if err := verifyImage(3, b); !errors.Is(err, ErrImageDigest) {
+	if err := verifyImage(3, b); !errors.Is(err, ErrImageDigest) || !strings.Contains(err.Error(), "no digest") {
 		t.Fatalf("a size with no pin: %v", err)
 	}
 	// An image checked against the pin of another size.

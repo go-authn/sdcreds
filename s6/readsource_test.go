@@ -37,11 +37,14 @@ func TestLoadFromAReadSource(t *testing.T) {
 	if err != nil || len(es) != 2 || string(es[0].data) != "one" || es[1].name != "b" || string(es[1].data) != "two" {
 		t.Fatalf("%v %v", es, err)
 	}
+	good := c.Decrypt
+	// A decrypter that accepts anything, so only the name check can refuse.
+	c.Decrypt = func(string, []byte) ([]byte, error) { return []byte("x"), nil }
 	c.ReadSource = func(string) ([]Sealed, error) { return []Sealed{{"../x", enc("a", "one")}}, nil }
 	if _, err := load(c); err == nil {
 		t.Fatal("a bad name was accepted")
 	}
-	good := c.Decrypt
+	c.Decrypt = good
 	c.ReadSource = func(string) ([]Sealed, error) { return []Sealed{{"a", enc("a", "one")}}, nil }
 	c.Decrypt = func(string, []byte) ([]byte, error) { return nil, boom }
 	if _, err := load(c); !errors.Is(err, boom) {

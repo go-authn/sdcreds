@@ -180,13 +180,6 @@ func TestReadSourceReportsAFailedDirectoryRead(t *testing.T) {
 	}
 }
 
-func TestANilLockHoldsNoDescriptor(t *testing.T) {
-	var l *Lock
-	if l.file() != nil {
-		t.Fatal("a nil lock has a file")
-	}
-}
-
 // A source someone else could have written is refused, whatever it holds: a
 // swapped sealed file is a rollback, or a secret of the attacker's choosing.
 func TestReadSourceTrustWalk(t *testing.T) {

@@ -45,6 +45,11 @@ func (f *fakeTable) ops() procOps {
 			if f.listErr != nil {
 				return nil, f.listErr
 			}
+			// A loop that ignores its budget ends here with an error, so a
+			// mutant that never gives up fails a test instead of hanging it.
+			if f.clock.After(time.Unix(1000, 0).Add(2 * rootKillBudget)) {
+				return nil, errors.New("fake: the clock ran past twice the budget")
+			}
 			if f.forkEvery > 0 {
 				for p := range f.live {
 					if !f.stopped[p] {
@@ -312,15 +317,29 @@ func TestAcquireUIDLock(t *testing.T) {
 
 // A nil delivery or lock is safe to hand around: each answers with its zero value.
 func TestNilDeliveryAndLockAreSafe(t *testing.T) {
+	// Each case is judged by an assertion, not by whether it crashes: a crash
+	// would otherwise end the test binary and hide the cases after it.
+	check := func(name string, f func() bool) {
+		t.Helper()
+		ok := false
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("%s: a nil receiver was not refused", name)
+				}
+			}()
+			ok = f()
+		}()
+		if !ok {
+			t.Errorf("%s: wrong answer", name)
+		}
+	}
 	var d *Delivery
-	if err := d.Release(); err != nil {
-		t.Fatalf("Release of nil: %v", err)
-	}
-	if d.Lost() != nil || (&Delivery{}).Lost() != nil {
-		t.Fatal("Lost of a delivery without a helper is nil")
-	}
+	check("Release of nil", func() bool { return d.Release() == nil })
+	check("Lost of nil", func() bool { return d.Lost() == nil })
+	check("Lost without a helper", func() bool { return (&Delivery{}).Lost() == nil })
+	check("Release without a helper", func() bool { return (&Delivery{}).Release() == nil })
 	var l *Lock
-	if l.file() != nil || l.Close() != nil {
-		t.Fatal("a nil lock has no file and closes cleanly")
-	}
+	check("file of a nil lock", func() bool { return l.file() == nil })
+	check("Close of a nil lock", func() bool { return l.Close() == nil })
 }
