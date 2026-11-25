@@ -38,7 +38,14 @@ var (
 )
 
 // UIDBusy reports ErrUnsupported off OpenBSD.
-func UIDBusy(exe string, uid, gid int, groups []int) (bool, error) { return false, ErrUnsupported }
+func UIDBusy(uid int) (bool, error) { return false, ErrUnsupported }
+
+// VerifyOnlyProcess reports ErrUnsupported off OpenBSD.
+func VerifyOnlyProcess(uid, pid int) error { return ErrUnsupported }
+
+// VerifyOnlyProcess is ErrUIDBusy unless pid is the only process of the target
+// user; the caller makes it just before the program is let to run.
+func (d *Delivery) VerifyOnlyProcess(pid int) error { return ErrUnsupported }
 
 // KillUID reports ErrUnsupported off OpenBSD.
 func KillUID(exe string, uid, gid int, groups []int) error { return ErrUnsupported }

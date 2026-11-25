@@ -11,6 +11,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/hex"
+	"errors"
 	"os"
 	"os/exec"
 	"os/user"
@@ -349,16 +350,65 @@ func TestRunCheckStopsBeforeTheKey(t *testing.T) {
 	}
 }
 
-// The default machine id is `sysctl hw.uuid`.
+// R3: the machine id is hw.uuid when no file is given. Both branches run on every
+// lane through the seam: a uuid that is there is the one used, one that is not
+// refuses the run, and no other source is then consulted.
+func withHWUUID(t *testing.T, f func() ([16]byte, error)) *int {
+	t.Helper()
+	old := hwUUID
+	t.Cleanup(func() { hwUUID = old })
+	calls := new(int)
+	hwUUID = func() ([16]byte, error) { *calls++; return f() }
+	return calls
+}
+
+func TestHostKeyUsesTheHardwareUUIDThatIsThere(t *testing.T) {
+	e := newVM(t)
+	calls := withHWUUID(t, func() ([16]byte, error) { return fixedMachineID, nil })
+	got, err := openbsdHostKeyOrRefuse(e.key, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := openbsdHostKey(e.key, e.mid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *calls != 1 || !bytes.Equal(got, want) || len(got) == 0 {
+		t.Fatalf("the key from hw.uuid differs from the key of the same id in a file (%d calls)", *calls)
+	}
+	// The uuid is what binds the key: another one finds the key foreign.
+	withHWUUID(t, func() ([16]byte, error) { return [16]byte{9, 9, 9}, nil })
+	if _, err := openbsdHostKeyOrRefuse(e.key, ""); err == nil {
+		t.Fatal("a key made for another machine id was accepted")
+	}
+	// An explicit file wins: hw.uuid is not even read.
+	n := withHWUUID(t, func() ([16]byte, error) { return [16]byte{}, nil })
+	if _, err := openbsdHostKey(e.key, e.mid); err != nil || *n != 0 {
+		t.Fatalf("with --machine-id-file: %v, hw.uuid read %d times", err, *n)
+	}
+}
+
+func TestHostKeyRefusesWithoutAHardwareUUID(t *testing.T) {
+	e := newVM(t)
+	calls := withHWUUID(t, func() ([16]byte, error) { return [16]byte{}, errors.New("sysctl hw.uuid: value is not available") })
+	key, err := openbsdHostKeyOrRefuse(e.key, "")
+	var rf *refusal
+	if !errors.As(err, &rf) || key != nil || !strings.Contains(err.Error(), "hw.uuid") || *calls != 1 {
+		t.Fatalf("got %v %v (%d calls)", key, err, *calls)
+	}
+	// An all-zero uuid is no id either.
+	withHWUUID(t, func() ([16]byte, error) { return [16]byte{}, nil })
+	if _, err := openbsdHostKeyOrRefuse(e.key, ""); !errors.As(err, &rf) {
+		t.Fatalf("a null uuid was accepted: %v", err)
+	}
+}
+
+// The real sysctl, where the machine has one (the CI VMs have none; a local VM
+// does).
 func TestRunUsesTheHardwareUUID(t *testing.T) {
 	e := newVM(t)
 	id, err := hwUUID()
 	if err != nil {
-		// A lane that is known to have hw.uuid (SDCREDS_HWUUID=1, set by CI) fails
-		// without it; a machine that has none (the 7.9 CI VM) cannot prove this path.
-		if os.Getenv("SDCREDS_HWUUID") == "1" {
-			t.Fatal("no hw.uuid on a machine that must have one: " + err.Error())
-		}
 		t.Skip("no hw.uuid on this machine: " + err.Error())
 	}
 	e.useHWUUID, e.machineID = true, id
@@ -438,6 +488,29 @@ exit 0`)
 	}
 	waitGone(t, pid)
 	e.nothingMounted()
+}
+
+// R2: a user is owned by one delivery at a time, whatever the service and the
+// base: a second service for it is refused at start, and the first goes on.
+func TestRunRefusesASecondServiceForTheSameUser(t *testing.T) {
+	e := newVM(t)
+	e.program(`echo $$; exec sleep 300`)
+	first := e.command()
+	pids := firstPIDs(t, first, 1)
+	t.Cleanup(func() { _ = syscall.Kill(pids[0], syscall.SIGKILL); _ = first.Process.Kill(); _ = first.Wait() })
+	second := exec.Command(e.bin, "run", "--service=other", "--user="+targetUser, "--source="+e.src,
+		"--base="+filepath.Join(e.dir, "base2"), "--secret="+e.key, "--machine-id-file="+e.mid, "--", e.prog)
+	var se bytes.Buffer
+	second.Stderr = &se
+	err := second.Run()
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || ee.ExitCode() != exitRefused {
+		t.Fatalf("second service: %v: %s", err, se.String())
+	}
+	if !alive(pids[0]) {
+		t.Fatal("the refusal killed the first service's program")
+	}
+	t.Cleanup(func() { delivery.Sweep(filepath.Join(e.dir, "base2")) })
 }
 
 // F1: the helper is gone: sdcreds kills the program and exits non-zero.

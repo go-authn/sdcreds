@@ -43,6 +43,11 @@ func TestMain(m *testing.M) {
 			os.Exit(0)
 		case "__daemon":
 			daemonMain()
+		case "__fdprobe":
+			fdProbeMain()
+			os.Exit(0)
+		case "__hostile":
+			hostileMain(os.Args[2:])
 		case "__sleeper":
 			time.Sleep(300 * time.Second)
 			os.Exit(0)
@@ -106,7 +111,12 @@ func testConfig(t testing.TB, base, name string, creds ...Credential) Config {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { l.Close() })
-	return Config{Base: base, Name: name, UID: testUID, GID: testGID, Creds: creds, Decrypt: fakeDecrypt, Lock: l, Executable: testExe()}
+	ul, err := AcquireUIDLock(base, testUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ul.Close() })
+	return Config{Base: base, Name: name, UID: testUID, GID: testGID, Creds: creds, Decrypt: fakeDecrypt, Lock: l, UIDLock: ul, Executable: testExe()}
 }
 
 // ownerMain: owner <base> <name> [memlock]. It prepares a delivery, starts a
@@ -124,8 +134,13 @@ func ownerMain(args []string) {
 		fmt.Println("error false", err)
 		return
 	}
+	ul, err := AcquireUIDLock(base, testUID)
+	if err != nil {
+		fmt.Println("error false", err)
+		return
+	}
 	d, err := Prepare(context.Background(), Config{Base: base, Name: name, UID: testUID, GID: testGID,
-		Creds: []Credential{{"smtp-password", []byte("hunter2")}}, Decrypt: fakeDecrypt, Lock: l, Executable: testExe()})
+		Creds: []Credential{{"smtp-password", []byte("hunter2")}}, Decrypt: fakeDecrypt, Lock: l, UIDLock: ul, Executable: testExe()})
 	if err != nil {
 		fmt.Println("error", errors.Is(err, ErrMemLock), err)
 		return
@@ -174,7 +189,7 @@ func needRoot(t *testing.T) string {
 		// the next test must not start while one is still doing it, or its probe
 		// is killed by a stranger.
 		for i := 0; i < 100; i++ {
-			if busy, err := UIDBusy(testExe(), testUID, testGID, nil); err == nil && !busy {
+			if busy, err := UIDBusy(testUID); err == nil && !busy {
 				return
 			}
 			time.Sleep(50 * time.Millisecond)

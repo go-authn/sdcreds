@@ -113,6 +113,14 @@ type ctlMsg struct {
 	err error
 }
 
+// closeOnExecInherited sets close-on-exec on descriptors 3, 4 and 5 (the control
+// socket and the two locks); one that was not passed is ignored.
+func closeOnExecInherited() {
+	for fd := 3; fd <= 5; fd++ {
+		unix.CloseOnExec(fd)
+	}
+}
+
 // ServeMFS is the helper process: it owns the memory file system and the only
 // copy of the locked region, and it never sees a secret except through the
 // file system the owner writes. argv is --owner N --dir D --mib M; ctl is the
@@ -125,8 +133,14 @@ func ServeMFS(argv []string, ctl *os.File) error {
 		say(Ctl{Kind: CtlFail, Text: err.Error()})
 		return err
 	}
+	// The control socket (3) and the two locks (4, 5) are root's: the helper runs
+	// programs as the target (the killer), and none may carry them across exec.
+	closeOnExecInherited()
 	a, err := parseHelperArgs(argv)
 	if err != nil {
+		return fail(err)
+	}
+	if err := checkProcLayout(); err != nil {
 		return fail(err)
 	}
 	HardenProcess()
@@ -224,8 +238,10 @@ func ServeMFS(argv []string, ctl *os.File) error {
 	killAll := func() error { return KillUID(a.Exe, a.UID, a.GID, a.Groups) }
 	teardown := func() error {
 		kerr := killAll()
-		// The unmount is by path: it is made only if what is there is still the
-		// mount this helper made (same file system id), never another one.
+		// The credentials go whatever the kill found (a survivor must not keep
+		// them), but a survivor is an error: the caller is never told that all
+		// went well. The unmount is by path: it is made only if what is there is
+		// still the mount this helper made (same file system id), never another one.
 		var st unix.Statfs_t
 		if unix.Statfs(a.Dir, &st) == nil && isOurs(&st) && cstr(st.F_mntonname[:]) == a.Dir && st.F_fsid == fsid {
 			_ = unix.Unmount(a.Dir, unix.MNT_FORCE)
@@ -239,21 +255,17 @@ func ServeMFS(argv []string, ctl *os.File) error {
 	for {
 		select {
 		case <-ownerGone:
-			_ = teardown()
-			return nil
+			return teardown()
 		case <-sigs:
-			_ = teardown()
-			return nil
+			return teardown()
 		case <-mountDone:
 			// Unmounted from outside (Sweep, an operator): the credentials are gone,
 			// so what was running on them must go too, before this helper does.
-			_ = killAll()
-			return nil
+			return killAll()
 		case m := <-msgs:
 			if m.err != nil {
 				// End of the socket or garbage: the owner is gone or confused.
-				_ = teardown()
-				return nil
+				return teardown()
 			}
 			switch m.c.Kind {
 			case CtlPGID:

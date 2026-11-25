@@ -2,6 +2,7 @@ package delivery
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"os"
@@ -13,21 +14,19 @@ import (
 )
 
 // KillCommand is the hidden command of the program that embeds this package:
-// run as the TARGET user, it signals every process that user can signal. A
-// process of the target cannot hide from it by calling setsid, setpgid or by
-// daemonizing, which a kill by process group cannot say.
+// run as the TARGET user, it signals every process that user can signal. It is
+// only the fast, race-free first move of KillUID: a process of the target can
+// signal it, so root (KillUID's second move) is what decides.
 const KillCommand = "__sdcreds-killuid"
 
 // Exit statuses of KillMain.
 const (
-	killExitAlive    = 3 // probe: the user has other processes
-	killExitSurvives = 4 // kill: some are still there after the time allowed
+	killExitSurvives = 4 // some are still there after the time allowed
 	killExitUsage    = 64
 )
 
-// killBudget is how long one KillMain keeps signalling: a process that forks
-// faster than it is killed is stopped by the login class limits, not by this.
-const killBudget = 4 * time.Second
+// killBudget is how long one KillMain keeps signalling.
+const killBudget = time.Second
 
 // ErrUIDBusy is a target user that already has processes: the delivery refuses
 // to start, because it will kill every process of that user when it ends.
@@ -36,48 +35,36 @@ var ErrUIDBusy = errors.New("delivery: the target user already has processes (a 
 // ErrUIDSurvives is a target user some of whose processes survived SIGKILL.
 var ErrUIDSurvives = errors.New("delivery: processes of the target user survived SIGKILL")
 
-// KillMain is the body of KillCommand; args is "probe" or "kill". It returns
-// the exit status. It refuses to run with uid or euid 0: kill(-1) as root is
-// every process of the machine.
+// KillMain is the body of KillCommand; args is "kill". It returns the exit
+// status. It refuses to run with uid or euid 0: kill(-1) as root is every
+// process of the machine.
 func KillMain(args []string) int {
-	if len(args) != 1 || os.Getuid() == 0 || os.Geteuid() == 0 {
+	if len(args) != 1 || args[0] != "kill" || os.Getuid() == 0 || os.Geteuid() == 0 {
 		return killExitUsage
 	}
-	switch args[0] {
-	case "probe":
-		switch err := unix.Kill(-1, 0); {
-		case err == nil:
-			return killExitAlive
-		case errors.Is(err, unix.ESRCH):
+	deadline := time.Now().Add(killBudget)
+	for {
+		err := unix.Kill(-1, unix.SIGKILL)
+		if errors.Is(err, unix.ESRCH) {
 			return 0
 		}
-		return 1
-	case "kill":
-		deadline := time.Now().Add(killBudget)
-		for {
-			err := unix.Kill(-1, unix.SIGKILL)
-			if errors.Is(err, unix.ESRCH) {
-				return 0
-			}
-			if time.Now().After(deadline) {
-				return killExitSurvives
-			}
-			time.Sleep(5 * time.Millisecond)
+		if time.Now().After(deadline) {
+			return killExitSurvives
 		}
+		time.Sleep(5 * time.Millisecond)
 	}
-	return killExitUsage
 }
 
-// runKiller runs `exe KillCommand mode` as the target user and returns its
-// exit status.
-func runKiller(exe, mode string, uid, gid int, groups []int) (int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), killBudget+3*time.Second)
+// runKiller runs `exe KillCommand kill` as the target user and returns its exit
+// status.
+func runKiller(exe string, uid, gid int, groups []int) (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), killBudget+time.Second)
 	defer cancel()
 	gs := make([]uint32, len(groups))
 	for i, g := range groups {
 		gs[i] = uint32(g)
 	}
-	cmd := exec.CommandContext(ctx, exe, KillCommand, mode)
+	cmd := exec.CommandContext(ctx, exe, KillCommand, "kill")
 	cmd.Env = []string{}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: gs}}
 	err := cmd.Run()
@@ -87,53 +74,110 @@ func runKiller(exe, mode string, uid, gid int, groups []int) (int, error) {
 		return 0, nil
 	case errors.As(err, &ee) && ee.ExitCode() >= 0:
 		return ee.ExitCode(), nil
-	case errors.As(err, &ee):
-		// ended by a signal: name it, instead of reporting a status of -1
-		return -1, fmt.Errorf("the %s child ended abnormally: %w", mode, err)
 	}
 	return -1, err
 }
 
-// UIDBusy reports whether the user has any process, by asking a child that runs
-// as that user. exe is the program that embeds this package.
-func UIDBusy(exe string, uid, gid int, groups []int) (bool, error) {
-	code, err := runKiller(exe, "probe", uid, gid, groups)
-	switch {
-	case err != nil:
-		return false, fmt.Errorf("delivery: probing the processes of uid %d: %w", uid, err)
-	case code == 0:
-		return false, nil
-	case code == killExitAlive:
-		return true, nil
+// The process table, from sysctl(3) kern.proc (sys/sysctl.h of OpenBSD): the
+// kernel fills one struct kinfo_proc per process, of the size asked for; the
+// pid is the int32 that follows twelve 64-bit pointers and three 32-bit fields.
+const (
+	kernProcUID  = 5 // KERN_PROC_UID: by effective uid
+	kernProcRUID = 6 // KERN_PROC_RUID: by real uid
+	kinfoSize    = 644
+	kinfoPidOff  = 12*8 + 3*4
+	procChunk    = 1024
+	procMax      = 1 << 20
+)
+
+// listKern returns the pids that sysctl kern.proc reports for one selector.
+func listKern(op, id int) ([]int, error) {
+	for count := procChunk; count <= procMax; count *= 2 {
+		buf, err := unix.SysctlRaw("kern.proc", op, id, kinfoSize, count)
+		if err != nil {
+			return nil, err
+		}
+		n := len(buf) / kinfoSize
+		if n >= count {
+			continue // the table may be larger than the room asked for
+		}
+		pids := make([]int, 0, n)
+		for i := 0; i < n; i++ {
+			pids = append(pids, int(int32(binary.NativeEndian.Uint32(buf[i*kinfoSize+kinfoPidOff:]))))
+		}
+		return pids, nil
 	}
-	return false, fmt.Errorf("delivery: probing the processes of uid %d: status %d", uid, code)
+	return nil, errors.New("the process table is larger than the limit")
 }
 
-// killRounds is how many times KillUID starts a killer: a process of the target
-// can signal the killer, as they share a user, and the next round goes on.
-const killRounds = 4
+// listUID is every process whose real OR effective uid is uid: the real uid is
+// what the target's processes have; a program that runs with the target as its
+// effective uid only (a set-uid file of that user) is the same user to this
+// delivery.
+func listUID(uid int) ([]int, error) {
+	var all []int
+	for _, op := range []int{kernProcRUID, kernProcUID} {
+		ps, err := listKern(op, uid)
+		if err != nil {
+			return nil, err
+		}
+		for _, p := range ps {
+			if !containsInt(all, p) {
+				all = append(all, p)
+			}
+		}
+	}
+	return all, nil
+}
 
-// KillUID sends SIGKILL to every process of the user, repeatedly, until none is
-// left, and returns ErrUIDSurvives if some are. The caller is root, and the
-// killer is a child that has dropped to the target user: only a process of that
-// user is ever signalled.
+func containsInt(s []int, v int) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}
+
+// checkProcLayout fails unless the process table lists this very process under
+// its own uid: a kernel whose struct kinfo_proc differs from the one this was
+// written for would otherwise read garbage, and the kill would do nothing.
+func checkProcLayout() error {
+	ps, err := listUID(os.Getuid())
+	if err != nil {
+		return fmt.Errorf("delivery: reading the process table: %w", err)
+	}
+	if !containsInt(ps, os.Getpid()) {
+		return errors.New("delivery: the process table does not list this process: struct kinfo_proc is not the one expected")
+	}
+	return nil
+}
+
+var realProcs = procOps{
+	list:   listUID,
+	signal: func(pid int, sig syscall.Signal) error { return unix.Kill(pid, sig) },
+	sleep:  time.Sleep,
+	now:    time.Now,
+}
+
+// UIDBusy reports whether the user has any process, read by root from the
+// process table.
+func UIDBusy(uid int) (bool, error) { return busyOf(uid, realProcs) }
+
+// VerifyOnlyProcess is ErrUIDBusy unless pid is the only process of uid; the
+// caller makes it just before it lets the program run.
+func VerifyOnlyProcess(uid, pid int) error { return onlyProcess(uid, pid, realProcs) }
+
+// KillUID makes every process of the user go. The caller is root. First, one
+// killer that has dropped to the target user sends SIGKILL to the user's
+// processes without a pid race; a process of the target may kill it, so the
+// outcome is not taken from it. Then root stops, re-reads and kills by the
+// process table until the user has no process, and returns ErrUIDSurvives if
+// some are left after the budget.
 func KillUID(exe string, uid, gid int, groups []int) error {
 	if err := ValidID(int64(uid), "uid"); err != nil {
 		return err
 	}
-	var last error = ErrUIDSurvives
-	for i := 0; i < killRounds; i++ {
-		code, err := runKiller(exe, "kill", uid, gid, groups)
-		switch {
-		case err != nil:
-			last = fmt.Errorf("delivery: killing the processes of uid %d: %w", uid, err)
-		case code == 0:
-			return nil
-		case code == killExitSurvives:
-			last = fmt.Errorf("%w (uid %d)", ErrUIDSurvives, uid)
-		default:
-			last = fmt.Errorf("delivery: killing the processes of uid %d: status %d", uid, code)
-		}
-	}
-	return last
+	_, _ = runKiller(exe, uid, gid, groups)
+	return killAllOf(uid, realProcs)
 }

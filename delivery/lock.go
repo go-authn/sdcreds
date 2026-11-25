@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"strconv"
 )
 
 var serviceRE = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
@@ -20,4 +21,10 @@ func LockPath(base, service string) (string, error) {
 		return "", fmt.Errorf("%w: %q", ErrBadService, service)
 	}
 	return filepath.Join(base, "."+service+".lock"), nil
+}
+
+// UIDLockPath is the lock file of a target user: Base/.uid-N.lock. A service
+// name cannot start with '.', so it never collides with a service lock.
+func UIDLockPath(base string, uid int) string {
+	return filepath.Join(base, ".uid-"+strconv.Itoa(uid)+".lock")
 }

@@ -58,9 +58,12 @@ func defaultSpawn(exe string) func(argv []string, files []*os.File) (int, error)
 }
 
 func prepare(ctx context.Context, c Config) (d *Delivery, err error) {
-	lockf := c.Lock.file()
+	lockf, uidf := c.Lock.file(), c.UIDLock.file()
 	if lockf == nil {
 		return nil, ErrNoLock
+	}
+	if uidf == nil {
+		return nil, ErrNoUIDLock
 	}
 	if err := EnsureBase(c.Base); err != nil {
 		return nil, err
@@ -68,7 +71,7 @@ func prepare(ctx context.Context, c Config) (d *Delivery, err error) {
 	// The delivery kills every process of the target user when it ends: it must
 	// own the user. One that has processes already is refused, before anything
 	// is decrypted.
-	if busy, err := UIDBusy(c.Executable, c.UID, c.GID, c.Groups); err != nil {
+	if busy, err := UIDBusy(c.UID); err != nil {
 		return nil, err
 	} else if busy {
 		return nil, fmt.Errorf("%w: uid %d", ErrUIDBusy, c.UID)
@@ -119,7 +122,7 @@ func prepare(ctx context.Context, c Config) (d *Delivery, err error) {
 		spawn = defaultSpawn(c.Executable)
 	}
 	args := helperArgs{Owner: os.Getpid(), Dir: dir, MiB: cl.MiB, UID: c.UID, GID: c.GID, Groups: c.Groups, Exe: c.Executable}
-	pid, err := spawn(append([]string{HelperCommand}, args.argv()...), []*os.File{theirs, lockf})
+	pid, err := spawn(append([]string{HelperCommand}, args.argv()...), []*os.File{theirs, lockf, uidf})
 	theirs.Close()
 	if err != nil {
 		return nil, fmt.Errorf("delivery: starting the helper: %w", err)
@@ -312,7 +315,7 @@ func (d *Delivery) release() error {
 		_, _ = s.ctl.Write([]byte(Ctl{Kind: CtlRelease}.String() + "\n"))
 		// Earlier messages (a "ready" nobody read, for one) come before the answer.
 		// The helper kills the target's processes before it answers.
-		t := time.NewTimer(releaseTimeout + 2*killBudget*killRounds)
+		t := time.NewTimer(releaseTimeout + killBudget + time.Second + rootKillBudget)
 		answered := false
 	wait:
 		for {
@@ -343,6 +346,16 @@ func (d *Delivery) release() error {
 }
 
 func (s *state) killTarget() error { return KillUID(s.exe, s.uid, s.gid, s.groups) }
+
+// VerifyOnlyProcess is ErrUIDBusy unless pid is the only process of the target
+// user. The caller makes it after it has guarded the program and before it lets
+// it run: anything else that appeared under the user in between is refused.
+func (d *Delivery) VerifyOnlyProcess(pid int) error {
+	if d == nil || d.impl == nil {
+		return errors.New("delivery: no delivery")
+	}
+	return VerifyOnlyProcess(d.impl.uid, pid)
+}
 
 // KillTarget sends SIGKILL to every process of the target user, from this
 // process; the caller uses it when the helper is gone (Lost is closed).

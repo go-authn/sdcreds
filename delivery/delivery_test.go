@@ -25,7 +25,7 @@ func goodConfig() Config {
 		Base: "/var/run/sdcreds", Name: "bridge", UID: 1000, GID: 1000,
 		Creds:   []Credential{{"smtp-password", []byte("sealed")}},
 		Decrypt: okDecrypt,
-		Lock:    &Lock{}, Executable: "/usr/local/bin/sdcreds",
+		Lock:    &Lock{}, UIDLock: &Lock{}, Executable: "/usr/local/bin/sdcreds",
 	}
 }
 

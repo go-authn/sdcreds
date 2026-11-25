@@ -107,16 +107,13 @@ jobs:
           run: |
             set -eu
             uname -a
-            # The CI VMs (7.9 and 8.0) have no hw.uuid ("value is not available"), so the
-            # hardware-UUID test skips there; it ran on a local 8.0 VM that has one. hw=1
-            # would make it fail instead of skip, for a runner that does have one.
-            hw=0
-            if test -n "$(sudo -n sysctl -n hw.uuid 2>/dev/null)"; then hw=1; fi
+            # hw.uuid: the CI VMs have none, so both branches of that decision run through
+            # the hwUUID seam (TestHostKey*); the test of the real sysctl skips there.
             sudo -n install -d -o root -g wheel -m 755 /usr/local/libexec/sdcreds-ci
             sudo -n install -o root -g wheel -m 755 obsd/sdcreds /usr/local/libexec/sdcreds-ci/sdcreds
             chmod 755 obsd/run.test obsd/delivery.test
             sudo -n ./obsd/delivery.test -test.v -test.timeout 5m
-            sudo -n env SDCREDS_HWUUID=$hw SDCREDS_BIN=/usr/local/libexec/sdcreds-ci/sdcreds ./obsd/run.test -test.v -test.timeout 5m
+            sudo -n env SDCREDS_BIN=/usr/local/libexec/sdcreds-ci/sdcreds ./obsd/run.test -test.v -test.timeout 5m
 
   fuzz:
     name: fuzz ${{ matrix.target }}

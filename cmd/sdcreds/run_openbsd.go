@@ -57,6 +57,17 @@ func openbsdHostKey(secret, machineIDFile string) ([]byte, error) {
 	return sdcreds.HostKeyFromFileMode(f, mid, 0o600)
 }
 
+// openbsdHostKeyOrRefuse is the host key of this machine, or a refusal: a host
+// without a hardware uuid (and no --machine-id-file) has no other source, so the
+// run stops before anything is mounted.
+func openbsdHostKeyOrRefuse(secret, machineIDFile string) ([]byte, error) {
+	key, err := openbsdHostKey(secret, machineIDFile)
+	if err != nil {
+		return nil, &refusal{err}
+	}
+	return key, nil
+}
+
 // openbsdFlow is `run` once every refusal passed.
 func openbsdFlow(cmd *cobra.Command, p *runPlan) error {
 	hardenProcess()
@@ -85,6 +96,19 @@ func openbsdFlow(cmd *cobra.Command, p *runPlan) error {
 		return err
 	}
 	defer lock.Close()
+	// The target user is owned by one delivery at a time, whatever --base says:
+	// its lock lives in the one fixed base, and the helper inherits it.
+	if err := delivery.EnsureBase(delivery.DefaultBase); err != nil {
+		return err
+	}
+	uidLock, err := delivery.AcquireUIDLock(delivery.DefaultBase, p.uid)
+	if errors.Is(err, delivery.ErrBusy) {
+		return &refusal{err}
+	}
+	if err != nil {
+		return err
+	}
+	defer uidLock.Close()
 	if sw, err := delivery.SweepService(p.base, p.service); err != nil {
 		return err
 	} else {
@@ -93,15 +117,15 @@ func openbsdFlow(cmd *cobra.Command, p *runPlan) error {
 		}
 	}
 
-	key, err := openbsdHostKey(p.secret, p.machineIDFile)
+	key, err := openbsdHostKeyOrRefuse(p.secret, p.machineIDFile)
 	if err != nil {
-		return &refusal{err}
+		return err
 	}
 	defer clear(key)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP, syscall.SIGQUIT)
 	d, err := delivery.Prepare(ctx, delivery.Config{
 		Base: p.base, Name: p.service, UID: p.uid, GID: p.gid, Groups: p.groups, Creds: p.creds,
-		Lock: lock, Executable: self,
+		Lock: lock, UIDLock: uidLock, Executable: self,
 		Decrypt: decrypter(sdcreds.StaticHostKey(key), p.allowNull),
 	})
 	stop()
@@ -119,10 +143,9 @@ func openbsdFlow(cmd *cobra.Command, p *runPlan) error {
 		}
 		return err
 	}
-	if err := d.Release(); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "sdcreds run: release: %v\n", err)
-	}
+	code = releaseExit(cmd.ErrOrStderr(), d.Release(), code)
 	lock.Close()
+	uidLock.Close()
 	osExit(code)
 	return nil
 }
@@ -164,13 +187,26 @@ func runStub(cmd *cobra.Command, p *runPlan, d *delivery.Delivery, self, limits 
 	gr.Close()
 	done := make(chan error, 1)
 	go func() { done <- c.Wait() }()
+	// The stub is this process's own child: it is killed directly first (no pid
+	// race, no help needed from the helper), then the user's other processes.
+	killAll := func() error {
+		_ = c.Process.Kill()
+		return d.KillTarget()
+	}
 	if err := d.GuardGroup(c.Process.Pid); err != nil {
-		_ = d.KillTarget()
+		_ = killAll()
 		<-done
 		return 0, err
 	}
+	// Nothing else may run under the user when the program is let go: the only
+	// process of the user is the stub.
+	if err := d.VerifyOnlyProcess(c.Process.Pid); err != nil {
+		_ = killAll()
+		<-done
+		return 0, &refusal{err}
+	}
 	if _, err := gw.Write([]byte{goByte}); err != nil {
-		_ = d.KillTarget()
+		_ = killAll()
 		<-done
 		return 0, err
 	}
@@ -184,7 +220,7 @@ func runStub(cmd *cobra.Command, p *runPlan, d *delivery.Delivery, self, limits 
 			// The helper is gone: nothing guards the mount or the program any
 			// more. Kill every process of the target and fail.
 			fmt.Fprintln(cmd.ErrOrStderr(), "sdcreds run: delivery lost: the credential mount is gone; killing the program")
-			kerr := d.KillTarget()
+			kerr := killAll()
 			<-done
 			return 0, errors.Join(errDeliveryLost, kerr)
 		case err := <-done:

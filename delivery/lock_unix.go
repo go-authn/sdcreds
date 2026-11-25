@@ -23,6 +23,22 @@ func AcquireLock(base, service string) (*Lock, error) {
 	if err != nil {
 		return nil, err
 	}
+	return lockFile(p)
+}
+
+// AcquireUIDLock takes the lock of one target user under base, or returns
+// ErrBusy: a delivery owns its user exclusively, and this is what makes it a
+// property between instances (two services of one user, a delivery that is
+// tearing down while another starts), whatever --base each of them was given.
+// The caller passes the one fixed base. The helper inherits the descriptor.
+func AcquireUIDLock(base string, uid int) (*Lock, error) {
+	if err := ValidID(int64(uid), "uid"); err != nil {
+		return nil, err
+	}
+	return lockFile(UIDLockPath(base, uid))
+}
+
+func lockFile(p string) (*Lock, error) {
 	fd, err := unix.Open(p, unix.O_RDWR|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0o600)
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: p, Err: err}

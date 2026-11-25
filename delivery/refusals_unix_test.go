@@ -314,6 +314,11 @@ func TestPrepareRefusesBeforeTheHelper(t *testing.T) {
 	if _, err := Prepare(context.Background(), c); !errors.Is(err, ErrNoLock) {
 		t.Fatalf("no lock: %v", err)
 	}
+	c = goodConfig()
+	c.UIDLock = nil
+	if _, err := Prepare(context.Background(), c); !errors.Is(err, ErrNoUIDLock) {
+		t.Fatalf("no user lock: %v", err)
+	}
 	for _, exe := range []string{"", "sdcreds", "./sdcreds", "/usr/local/bin/../bin/sdcreds", "/usr/local/bin/"} {
 		c = goodConfig()
 		c.Executable = exe

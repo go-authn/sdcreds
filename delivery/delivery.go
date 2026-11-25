@@ -113,8 +113,8 @@ type Config struct {
 	Decrypt func(name string, sealed []byte) ([]byte, error)
 	// SpawnHelper starts the helper process that serves the memory file system:
 	// argv[0] is the command (HelperCommand); files[0] is its control socket and
-	// files[1] the service lock, which the helper receives as descriptors 3 and 4
-	// and keeps for as long as it lives, so that a second instance of the service
+	// files[1] the service lock and files[2] the lock of the target user, which the
+	// helper receives as descriptors 3, 4 and 5 and keeps for as long as it lives, so that a second instance of the service
 	// cannot start while a helper of the first one still holds a mount. nil:
 	// execute Executable with argv, reaping the child. The caller of a custom
 	// hook must make the helper run ServeMFS(argv[1:], files[0]). The helper never
@@ -123,6 +123,10 @@ type Config struct {
 	// Lock is the service lock the caller holds (AcquireLock); the helper
 	// inherits it. Required.
 	Lock *Lock
+	// UIDLock is the lock of the target user (AcquireUIDLock, under the one fixed
+	// base): the delivery owns its user exclusively, and the helper inherits this
+	// lock as it does the service lock. Required.
+	UIDLock *Lock
 	// Executable is the program that embeds this package: an absolute, normalised
 	// path that the caller has judged (root-owned, not writable by others, in
 	// directories likewise). It runs the helper and the processes that kill the
@@ -133,6 +137,7 @@ type Config struct {
 // Further typed refusals.
 var (
 	ErrNoLock       = errors.New("delivery: no service lock: the helper must inherit the lock of the service")
+	ErrNoUIDLock    = errors.New("delivery: no user lock: the helper must inherit the lock of the target user")
 	ErrNoExecutable = errors.New("delivery: no executable: an absolute path of the program that embeds this package is required")
 )
 
@@ -274,6 +279,9 @@ func Prepare(ctx context.Context, c Config) (*Delivery, error) {
 	}
 	if c.Lock == nil {
 		return nil, ErrNoLock
+	}
+	if c.UIDLock == nil {
+		return nil, ErrNoUIDLock
 	}
 	if !filepath.IsAbs(c.Executable) || filepath.Clean(c.Executable) != c.Executable {
 		return nil, fmt.Errorf("%w: %q", ErrNoExecutable, c.Executable)
