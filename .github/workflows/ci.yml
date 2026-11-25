@@ -107,13 +107,16 @@ jobs:
           run: |
             set -eu
             uname -a
-            # no "|| true": a missing hw.uuid must fail the lane, not hide
-            sudo -n sysctl -n hw.uuid
+            # The 7.9 VM has no hw.uuid ("value is not available"); 8.0 has it, and
+            # there a missing one fails the lane. hw=1 makes the test fail, not skip.
+            hw=0
+            if test -n "$(sudo -n sysctl -n hw.uuid 2>/dev/null)"; then hw=1; fi
+            if test "${{ matrix.version }}" = 8.0; then test "$hw" = 1; fi
             sudo -n install -d -o root -g wheel -m 755 /usr/local/libexec/sdcreds-ci
             sudo -n install -o root -g wheel -m 755 obsd/sdcreds /usr/local/libexec/sdcreds-ci/sdcreds
             chmod 755 obsd/run.test obsd/delivery.test
             sudo -n ./obsd/delivery.test -test.v -test.timeout 5m
-            sudo -n env SDCREDS_BIN=/usr/local/libexec/sdcreds-ci/sdcreds ./obsd/run.test -test.v -test.timeout 5m
+            sudo -n env SDCREDS_HWUUID=$hw SDCREDS_BIN=/usr/local/libexec/sdcreds-ci/sdcreds ./obsd/run.test -test.v -test.timeout 5m
 
   fuzz:
     name: fuzz ${{ matrix.target }}

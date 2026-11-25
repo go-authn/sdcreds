@@ -150,6 +150,9 @@ func ownerMain(args []string) {
 		fmt.Println("error false", err)
 		return
 	}
+	// A real owner waits for the program; a killed child that nobody waits for is
+	// a zombie, and a zombie still answers kill(pid, 0).
+	go func() { _ = cmd.Wait() }()
 	fmt.Println("ready", cmd.Process.Pid, d.impl.pid, strings.TrimSpace(line))
 	select {}
 }
