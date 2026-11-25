@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -183,5 +184,53 @@ func TestLoadClassLimitsPrefersTheClassFile(t *testing.T) {
 	}
 	if _, err := LoadClassLimits("web", func(string) (string, bool, error) { return "", false, nil }); !errors.Is(err, errClassLimit) {
 		t.Errorf("no login.conf: %v", err)
+	}
+}
+
+func TestValidClassName(t *testing.T) {
+	for _, ok := range []string{"daemon", "a-b_c.d", "A1", strings.Repeat("a", 64)} {
+		if !validClassName(ok) {
+			t.Errorf("%q refused", ok)
+		}
+	}
+	for _, bad := range []string{"", ".x", "a/b", "a b", "a:b", "a\x00", "é", strings.Repeat("a", 65)} {
+		if validClassName(bad) {
+			t.Errorf("%q accepted", bad)
+		}
+	}
+}
+
+func TestLoadClassLimitsReadsNothingForABadNameAndNamesAMissingFile(t *testing.T) {
+	reads := 0
+	read := func(string) (string, bool, error) { reads++; return "", false, nil }
+	if _, err := LoadClassLimits("../x", read); !errors.Is(err, errClassLimit) || reads != 0 {
+		t.Errorf("bad name: %v (%d reads)", err, reads)
+	}
+	if _, err := LoadClassLimits("web", read); !errors.Is(err, errClassLimit) || !strings.Contains(err.Error(), "does not exist") {
+		t.Errorf("missing login.conf: %v", err)
+	}
+}
+
+func TestClassLimitsNameATCLoop(t *testing.T) {
+	if _, err := limitsOf(t, "loop1"); err == nil || !strings.Contains(err.Error(), "loop") {
+		t.Errorf("a loop must be named as one: %v", err)
+	}
+}
+
+func TestCheckClassAcceptsOnlyARegularClassFile(t *testing.T) {
+	oldDir, oldConf := loginConfDir, loginConfPath
+	t.Cleanup(func() { loginConfDir, loginConfPath = oldDir, oldConf })
+	loginConfDir, loginConfPath = t.TempDir(), t.TempDir()+"/absent"
+	if err := os.WriteFile(loginConfDir+"/file", nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(loginConfDir+"/dir", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkClass("file"); err != nil {
+		t.Errorf("a class file: %v", err)
+	}
+	if err := checkClass("dir"); err == nil {
+		t.Error("a directory is not a class file")
 	}
 }

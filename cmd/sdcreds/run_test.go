@@ -53,6 +53,8 @@ func newRunEnv(t *testing.T, os_ string) *runEnv {
 			return &user.User{Username: "gid0", Uid: "12345", Gid: "0"}, nil
 		case "weird":
 			return &user.User{Username: "weird", Uid: "x", Gid: "y"}, nil
+		case "uid0only":
+			return &user.User{Username: "uid0only", Uid: "0", Gid: "12345"}, nil
 		}
 		return nil, user.UnknownUserError(name)
 	}
@@ -146,6 +148,21 @@ func TestRunRefusals(t *testing.T) {
 				userGroupIDs = func(u *user.User) ([]string, error) { return []string{u.Gid, "4294967296"}, nil }
 			},
 			func(e *runEnv) []string { return []string{"--", e.prog} }, delivery.ErrBadID},
+		// each id is judged by its own check, not by the group list that repeats it
+		{"uid 0 alone", "openbsd",
+			func(e *runEnv) { userGroupIDs = func(*user.User) ([]string, error) { return []string{"77"}, nil } },
+			func(e *runEnv) []string { return []string{"--user=uid0only", "--", e.prog} }, delivery.ErrRootTarget},
+		{"gid 0 alone", "openbsd",
+			func(e *runEnv) { userGroupIDs = func(*user.User) ([]string, error) { return []string{"77"}, nil } },
+			func(e *runEnv) []string { return []string{"--user=gid0", "--", e.prog} }, delivery.ErrRootTarget},
+		{"gid that wraps alone", "openbsd",
+			func(e *runEnv) { userGroupIDs = func(*user.User) ([]string, error) { return []string{"77"}, nil } },
+			func(e *runEnv) []string { return []string{"--user=wrapgid", "--", e.prog} }, delivery.ErrBadID},
+		{"group that is not a number", "openbsd",
+			func(e *runEnv) {
+				userGroupIDs = func(u *user.User) ([]string, error) { return []string{u.Gid, "wheel"}, nil }
+			},
+			func(e *runEnv) []string { return []string{"--", e.prog} }, errUnknownUser},
 		{"unknown class", "openbsd", nil, func(e *runEnv) []string { return []string{"--class=nope", "--", e.prog} }, errBadClass},
 		{"login.conf missing", "openbsd", func(e *runEnv) { loginConfPath = filepath.Join(e.dir, "absent") },
 			func(e *runEnv) []string { return []string{"--class=staff", "--", e.prog} }, errBadClass},
