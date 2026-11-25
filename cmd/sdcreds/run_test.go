@@ -150,13 +150,22 @@ func TestRunRefusals(t *testing.T) {
 			func(e *runEnv) []string { return []string{"--", e.prog} }, delivery.ErrBadID},
 		// each id is judged by its own check, not by the group list that repeats it
 		{"uid 0 alone", "openbsd",
-			func(e *runEnv) { userGroupIDs = func(*user.User) ([]string, error) { return []string{"77"}, nil } },
+			func(e *runEnv) {
+				euid = func() int { return 1000 } // judged before the privilege check
+				userGroupIDs = func(*user.User) ([]string, error) { return []string{"77"}, nil }
+			},
 			func(e *runEnv) []string { return []string{"--user=uid0only", "--", e.prog} }, delivery.ErrRootTarget},
 		{"gid 0 alone", "openbsd",
-			func(e *runEnv) { userGroupIDs = func(*user.User) ([]string, error) { return []string{"77"}, nil } },
+			func(e *runEnv) {
+				euid = func() int { return 1000 }
+				userGroupIDs = func(*user.User) ([]string, error) { return []string{"77"}, nil }
+			},
 			func(e *runEnv) []string { return []string{"--user=gid0", "--", e.prog} }, delivery.ErrRootTarget},
 		{"gid that wraps alone", "openbsd",
-			func(e *runEnv) { userGroupIDs = func(*user.User) ([]string, error) { return []string{"77"}, nil } },
+			func(e *runEnv) {
+				euid = func() int { return 1000 }
+				userGroupIDs = func(*user.User) ([]string, error) { return []string{"77"}, nil }
+			},
 			func(e *runEnv) []string { return []string{"--user=wrapgid", "--", e.prog} }, delivery.ErrBadID},
 		{"group that is not a number", "openbsd",
 			func(e *runEnv) {

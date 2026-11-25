@@ -148,6 +148,29 @@ func TestReadSourceEachRefusal(t *testing.T) {
 	})
 }
 
+// The sealed forms are bounded together before anything is decrypted: files that
+// each fit, but not all of them, are refused by the reader itself.
+func TestReadSourceBoundsTheSealedTotal(t *testing.T) {
+	trustTemp(t)
+	dir := t.TempDir()
+	body := make([]byte, maxArmoured)
+	for i := 0; i <= maxSealedTotal/maxArmoured; i++ {
+		if err := os.WriteFile(filepath.Join(dir, "c"+strconv.Itoa(i)), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := ReadSource(dir); !errors.Is(err, sdcreds.ErrTooLarge) {
+		t.Fatalf("total over the bound: %v", err)
+	}
+}
+
+func TestANilLockHoldsNoDescriptor(t *testing.T) {
+	var l *Lock
+	if l.file() != nil {
+		t.Fatal("a nil lock has a file")
+	}
+}
+
 // A source someone else could have written is refused, whatever it holds: a
 // swapped sealed file is a rollback, or a secret of the attacker's choosing.
 func TestReadSourceTrustWalk(t *testing.T) {
