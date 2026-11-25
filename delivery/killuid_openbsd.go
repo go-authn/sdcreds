@@ -85,8 +85,11 @@ func runKiller(exe, mode string, uid, gid int, groups []int) (int, error) {
 	switch {
 	case err == nil:
 		return 0, nil
-	case errors.As(err, &ee):
+	case errors.As(err, &ee) && ee.ExitCode() >= 0:
 		return ee.ExitCode(), nil
+	case errors.As(err, &ee):
+		// ended by a signal: name it, instead of reporting a status of -1
+		return -1, fmt.Errorf("the %s child ended abnormally: %w", mode, err)
 	}
 	return -1, err
 }

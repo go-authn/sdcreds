@@ -107,11 +107,11 @@ jobs:
           run: |
             set -eu
             uname -a
-            # The 7.9 VM has no hw.uuid ("value is not available"); 8.0 has it, and
-            # there a missing one fails the lane. hw=1 makes the test fail, not skip.
+            # The CI VMs (7.9 and 8.0) have no hw.uuid ("value is not available"), so the
+            # hardware-UUID test skips there; it ran on a local 8.0 VM that has one. hw=1
+            # would make it fail instead of skip, for a runner that does have one.
             hw=0
             if test -n "$(sudo -n sysctl -n hw.uuid 2>/dev/null)"; then hw=1; fi
-            if test "${{ matrix.version }}" = 8.0; then test "$hw" = 1; fi
             sudo -n install -d -o root -g wheel -m 755 /usr/local/libexec/sdcreds-ci
             sudo -n install -o root -g wheel -m 755 obsd/sdcreds /usr/local/libexec/sdcreds-ci/sdcreds
             chmod 755 obsd/run.test obsd/delivery.test

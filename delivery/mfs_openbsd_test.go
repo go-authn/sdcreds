@@ -167,7 +167,19 @@ func needRoot(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = Sweep(base); _ = os.RemoveAll(base) })
+	t.Cleanup(func() {
+		_, _ = Sweep(base)
+		_ = os.RemoveAll(base)
+		// A helper of this test kills every process of the target uid when it ends;
+		// the next test must not start while one is still doing it, or its probe
+		// is killed by a stranger.
+		for i := 0; i < 100; i++ {
+			if busy, err := UIDBusy(testExe(), testUID, testGID, nil); err == nil && !busy {
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	})
 	return base
 }
 
