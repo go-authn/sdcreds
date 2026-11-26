@@ -247,6 +247,23 @@ func TestSameSet(t *testing.T) {
 	}
 }
 
+// A killer stuck in its fork (stopped by a hostile target before its exec) does
+// not hold the release: the caller goes on after the delay.
+func TestGiveUpAfter(t *testing.T) {
+	if !giveUpAfter(time.Second, func() {}) {
+		t.Fatal("a quick function reported as given up")
+	}
+	block := make(chan struct{})
+	defer close(block)
+	start := time.Now()
+	if giveUpAfter(30*time.Millisecond, func() { <-block }) {
+		t.Fatal("a blocked function reported as done")
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Fatal("did not give up in time")
+	}
+}
+
 func TestOnlyProcessAndBusy(t *testing.T) {
 	f := newTable(10)
 	if err := onlyProcess(5000, 10, f.ops()); err != nil {

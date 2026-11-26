@@ -13,6 +13,26 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// giveUpAfter runs f and returns true when it came back within d. When it did
+// not, f is left running in its goroutine: the caller goes on without it. The
+// first-move killer is started this way, because a hostile process of the target
+// can SIGSTOP the killer between its setuid and its exec, and the parent's fork
+// then blocks until root has killed that user's processes, which is what the
+// caller does next.
+func giveUpAfter(d time.Duration, f func()) bool {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f()
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
+	}
+}
+
 // procOps is what the root-side kill needs from the system; the tests give it a
 // scripted process table.
 type procOps struct {

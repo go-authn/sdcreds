@@ -168,6 +168,6 @@ func KillUID(exe string, uid, gid int, groups []int) error {
 	if err := ValidID(int64(uid), "uid"); err != nil {
 		return err
 	}
-	_, _ = runKiller(exe, uid, gid, groups)
+	_ = giveUpAfter(killBudget+time.Second, func() { _, _ = runKiller(exe, uid, gid, groups) })
 	return killAllOf(uid, realProcs)
 }
