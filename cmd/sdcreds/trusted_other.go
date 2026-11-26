@@ -7,6 +7,12 @@ import (
 	"os"
 )
 
+// The same seams as trusted_unix.go, for run.go.
+var (
+	trustedUID    = uint32(0)
+	ancestorsFrom = "/"
+)
+
 var errNoTrust = errors.New("key files named on the command line are not supported on this system")
 
 func openTrusted(string) (*os.File, error) { return nil, errNoTrust }

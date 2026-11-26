@@ -206,7 +206,9 @@ func TestS6RunKeyFlags(t *testing.T) {
 	asOwner(t, uint32(os.Getuid())+1)
 	*calls = nil
 	_, _, err := run(t, "", args()...)
-	if err == nil || !strings.Contains(err.Error(), "--secret") || !strings.Contains(err.Error(), "not owned") {
+	// The source is judged by the same owner, so it is refused first or the secret
+	// is: either way nothing is mounted.
+	if err == nil || !strings.Contains(err.Error(), "owned") {
 		t.Errorf("foreign owner of the secret: %v", err)
 	}
 	if strings.Contains(strings.Join(*calls, " "), "mount") {
@@ -417,4 +419,50 @@ func TestS6RunWipesTheKeyBeforeTheServiceStarts(t *testing.T) {
 	if err != nil || !hooked || before != nil || after == nil {
 		t.Errorf("run=%v hooked=%v before=%v after=%v", err, hooked, before, after)
 	}
+}
+
+// R6: the source of s6-run is judged like the key: a directory that others can
+// write, a symbolic link in it, a file that others can write, are all refused
+// before anything is decrypted or mounted.
+func TestS6RunJudgesTheSource(t *testing.T) {
+	src, base, secret, mid := hostSealed(t)
+	asOwner(t, uint32(os.Getuid()))
+	calls := withOps(t)
+	run1 := func() error {
+		*calls = nil
+		_, _, err := run(t, "", "s6-run", "--service=web", "--user=svc", "--base-dir="+base, "--source="+src,
+			"--secret="+secret, "--machine-id-file="+mid, "--", "/bin/web")
+		return err
+	}
+	if err := run1(); err == nil || !strings.Contains(err.Error(), "exec reached") {
+		t.Fatalf("a trusted source: %v", err)
+	}
+	refused := func(what string) {
+		t.Helper()
+		err := run1()
+		if err == nil || strings.Contains(err.Error(), "exec reached") {
+			t.Errorf("%s: %v", what, err)
+		}
+		if strings.Contains(strings.Join(*calls, " "), "mount") {
+			t.Errorf("%s: mounted: %v", what, *calls)
+		}
+	}
+	if err := os.Chmod(filepath.Join(src, "db"), 0o666); err != nil {
+		t.Fatal(err)
+	}
+	refused("a file that others can write")
+	if err := os.Chmod(filepath.Join(src, "db"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(src, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	refused("a directory that others can write")
+	if err := os.Chmod(src, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(src, "db"), filepath.Join(src, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	refused("a symbolic link in the source")
 }

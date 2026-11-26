@@ -23,6 +23,8 @@ const midText = "0123456789abcdef0123456789abcdef\n"
 func env(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
+	// The s6-run source is judged like a key file; the test is its owner.
+	trustSource(t)
 	// A test that names a relative path (or "-" as an output file) writes it
 	// here, never into the source tree.
 	t.Chdir(dir)

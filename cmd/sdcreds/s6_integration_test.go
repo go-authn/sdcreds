@@ -59,7 +59,8 @@ func newITRig(t *testing.T) *itRig {
 	if out, err := r.sdcreds("", "setup"); err != nil {
 		t.Fatalf("setup: %v: %s", err, out)
 	}
-	r.src = filepath.Join(r.dir, "src")
+	// The source is judged like the key: root-owned directories all the way up.
+	r.src = filepath.Join(keydir, "src")
 	os.MkdirAll(r.src, 0o700)
 	if out, err := r.sdcreds("hunter2", "encrypt", "--name=db", "-", filepath.Join(r.src, "db")); err != nil {
 		t.Fatalf("encrypt: %v: %s", err, out)

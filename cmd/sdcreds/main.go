@@ -42,7 +42,8 @@ func RootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: false,
 	}
-	root.AddCommand(encryptCmd(), decryptCmd(), setupCmd(), s6RunCmd(), s6FinishCmd())
+	root.AddCommand(encryptCmd(), decryptCmd(), setupCmd(), s6RunCmd(), s6FinishCmd(), runCmd(), sweepCmd())
+	addHelperCmds(root)
 	return root
 }
 
@@ -477,54 +478,52 @@ func s6RunCmd() *cobra.Command {
 		Use:   "s6-run --service S --user U --source DIR -- COMMAND [ARG...]",
 		Short: "mount the decrypted credentials of a service and exec it",
 		Args:  cobra.MinimumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// An unknown or forbidden capability stops the run here, before the key
-			// is read, anything is decrypted or anything is mounted.
-			keep, kerr0 := s6.ParseKeepCaps(f.keepCap)
-			if kerr0 != nil {
-				return kerr0
-			}
-			hardenProcess()
-			// The key is never chosen by the environment: this runs with
-			// privileges, in front of a service. SYSTEMD_CREDENTIAL_SECRET and
-			// SDCREDS_MACHINE_ID_FILE are ignored; --secret and --machine-id-file
-			// are the only overrides and name root-owned files.
-			hk, wipe, kerr := s6HostKey(f.secret, f.machineIDFile)
-			defer wipe()
-			if kerr != nil {
-				hk = failingKey{kerr}
-			}
-			c := s6.Config{
-				Service: f.service, User: f.user, BaseDir: f.baseDir, Source: f.source,
-				Unshare: f.unshare, KeepCaps: keep, Command: args, Env: os.Environ(),
-				// The key is wiped as soon as decryption ends, before the
-				// service starts; the defer above stays for an early return.
-				Decrypted: wipe,
-				Decrypt: func(name string, enc []byte) ([]byte, error) {
-					blob, err := sdcreds.Unarmor(enc)
-					if err != nil {
-						return nil, err
-					}
-					// No EnvOverrides here: a service's environment must not steer
-					// key material. A null or nameless credential is refused unless
-					// the operator passed --allow-null.
-					o := sdcreds.DecryptOptions{HostKey: hk, Name: &name, RequireName: true, AllowNull: f.allowNull}
-					pt, _, err := sdcreds.Decrypt(blob, o)
-					return pt, err
-				},
-			}
-			// s6 supervises this process: its exit status is the service's.
-			err := s6Run(c, s6Ops())
-			var ee *s6.ExitError
-			if errors.As(err, &ee) {
-				osExit(ee.Code)
-				return nil
-			}
-			return err
-		},
+		RunE:  func(cmd *cobra.Command, args []string) error { return runS6(f, args) },
 	}
 	f.register(cmd, true)
 	return cmd
+}
+
+// runS6 is s6-run, shared with `sdcreds run` on Linux.
+func runS6(f s6Flags, args []string) error {
+	// An unknown or forbidden capability stops the run here, before the key
+	// is read, anything is decrypted or anything is mounted.
+	keep, kerr0 := s6.ParseKeepCaps(f.keepCap)
+	if kerr0 != nil {
+		return kerr0
+	}
+	hardenProcess()
+	// The key is never chosen by the environment: this runs with
+	// privileges, in front of a service. SYSTEMD_CREDENTIAL_SECRET and
+	// SDCREDS_MACHINE_ID_FILE are ignored; --secret and --machine-id-file
+	// are the only overrides and name root-owned files.
+	hk, wipe, kerr := s6HostKey(f.secret, f.machineIDFile)
+	defer wipe()
+	if kerr != nil {
+		hk = failingKey{kerr}
+	}
+	c := s6.Config{
+		Service: f.service, User: f.user, BaseDir: f.baseDir, Source: f.source,
+		// The source is walked like the key file: root-owned, no link, not
+		// writable by others, every directory above it too.
+		ReadSource: sourceReader,
+		Unshare:    f.unshare, KeepCaps: keep, Command: args, Env: os.Environ(),
+		// The key is wiped as soon as decryption ends, before the
+		// service starts; the defer above stays for an early return.
+		Decrypted: wipe,
+		// No EnvOverrides: a service's environment must not steer key
+		// material. A null or nameless credential is refused unless the
+		// operator passed --allow-null.
+		Decrypt: decrypter(hk, f.allowNull),
+	}
+	// s6 supervises this process: its exit status is the service's.
+	err := s6Run(c, s6Ops())
+	var ee *s6.ExitError
+	if errors.As(err, &ee) {
+		osExit(ee.Code)
+		return nil
+	}
+	return err
 }
 
 // failingKey defers the machine-id error until a credential needs the host key.

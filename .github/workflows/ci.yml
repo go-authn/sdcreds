@@ -45,6 +45,79 @@ jobs:
           docker run --rm -v "$PWD":/src/sdcreds -w /src/sdcreds sdcreds-interop
           sh -c 'go run ./internal/genvectors && git config --global --add safe.directory /src/sdcreds && git diff --stat --exit-code -- testdata/systemd-v262.2/manifest.json'
 
+  openbsd-build:
+    name: cross-compile (openbsd/${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    env:
+      GOOS: openbsd
+      GOARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.27"
+      - run: go vet ./...
+      - run: go build ./...
+      - name: the test binaries compile too
+        run: |
+          go test -c -o /dev/null ./delivery/
+          go test -c -o /dev/null ./cmd/sdcreds/
+
+  # A real OpenBSD: the mount, the daemon's exit, SIGKILL of sdcreds (which must
+  # kill the daemon and unmount), the sweep of a leftover and the uid 0 refusal.
+  # No secret is given to the VM; the host key it uses is made by the tests.
+  openbsd-vm:
+    name: openbsd ${{ matrix.version }} (VM, root)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ["8.0", "7.9"]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.27"
+      - name: build the binaries on the runner
+        env:
+          GOOS: openbsd
+          GOARCH: amd64
+        run: |
+          mkdir obsd
+          go build -o obsd/sdcreds ./cmd/sdcreds
+          go test -c -o obsd/run.test ./cmd/sdcreds/
+          go test -c -o obsd/delivery.test ./delivery/
+      - uses: cross-platform-actions/action@30cde56b87a128507bebea9531205087890ee360 # v1.8.0
+        with:
+          operating_system: openbsd
+          architecture: x86-64
+          version: ${{ matrix.version }}
+          shell: sh
+          memory: 2G
+          cpu_count: 2
+          sync_files: runner-to-vm
+          run: |
+            set -eu
+            uname -a
+            # hw.uuid: the CI VMs have none, so both branches of that decision run through
+            # the hwUUID seam (TestHostKey*); the test of the real sysctl skips there.
+            sudo -n install -d -o root -g wheel -m 755 /usr/local/libexec/sdcreds-ci
+            sudo -n install -o root -g wheel -m 755 obsd/sdcreds /usr/local/libexec/sdcreds-ci/sdcreds
+            chmod 755 obsd/run.test obsd/delivery.test
+            # Each test binary runs from its own package directory: the tests read
+            # files (the embedded images, testdata) by a path relative to it.
+            bin=$PWD/obsd
+            (cd delivery && sudo -n "$bin/delivery.test" -test.v -test.timeout 5m)
+            (cd cmd/sdcreds && sudo -n env SDCREDS_BIN=/usr/local/libexec/sdcreds-ci/sdcreds "$bin/run.test" -test.v -test.timeout 5m)
+
   fuzz:
     name: fuzz ${{ matrix.target }}
     runs-on: ubuntu-latest
@@ -52,12 +125,21 @@ jobs:
       fail-fast: false
       matrix:
         target: [FuzzParse, FuzzDecrypt, FuzzRoundTrip, FuzzUnarmor]
+        pkg: ["."]
+        include:
+          - {target: FuzzParseCtl, pkg: ./delivery/}
+          - {target: FuzzLockPath, pkg: ./delivery/}
+          - {target: FuzzParseHelperArgs, pkg: ./delivery/}
+          - {target: FuzzParseLoginClasses, pkg: ./cmd/sdcreds/}
+          - {target: FuzzParseUUID, pkg: ./cmd/sdcreds/}
+          - {target: FuzzDecodeLimits, pkg: ./cmd/sdcreds/}
+          - {target: FuzzLoadClassLimits, pkg: ./cmd/sdcreds/}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.27"
-      - run: go test -fuzz '^${{ matrix.target }}$' -fuzztime 60s .
+      - run: go test -fuzz '^${{ matrix.target }}$' -fuzztime 60s ${{ matrix.pkg }}
 
   govulncheck:
     runs-on: ubuntu-latest

@@ -72,11 +72,11 @@ func lookupUser(name string) (User, error) {
 	if err != nil {
 		return User{}, err
 	}
-	uid, err := strconv.Atoi(u.Uid)
+	uid, err := parseID(u.Uid)
 	if err != nil {
 		return User{}, err
 	}
-	gid, err := strconv.Atoi(u.Gid)
+	gid, err := parseID(u.Gid)
 	if err != nil {
 		return User{}, err
 	}
@@ -86,13 +86,28 @@ func lookupUser(name string) (User, error) {
 		return User{}, err
 	}
 	for _, s := range ids {
-		g, err := strconv.Atoi(s)
+		g, err := parseID(s)
 		if err != nil {
 			return User{}, err
 		}
 		out.Groups = append(out.Groups, g)
 	}
 	return out, nil
+}
+
+// parseID reads a user or group id as the 32-bit value the kernel receives. The
+// credential is later converted with uint32(n): a number of 2^32 or more would
+// become 0 (root), and 0xFFFFFFFF is "no change" to the kernel, so both are
+// refused here, before any conversion.
+func parseID(s string) (int, error) {
+	n, err := strconv.ParseUint(s, 10, 32)
+	if err != nil {
+		return 0, err
+	}
+	if n == 0xFFFFFFFF {
+		return 0, fmt.Errorf("s6: id %s is not a usable user or group id", s)
+	}
+	return int(n), nil
 }
 
 // unshare moves this thread into a new mount namespace whose mounts do not

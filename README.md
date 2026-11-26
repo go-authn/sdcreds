@@ -99,7 +99,10 @@ anything is mounted, and so is whether the service user may execute it. The
 base directory, when `s6-run` creates it, is made 0755 whatever the umask.
 Every mount is named `sdcreds`, and `s6-finish` (like `s6-run` before it mounts)
 detaches only a mount of that name. A credential sealed with the null key is refused unless
-`--allow-null` is given, and one that carries no name is always refused. `sdcreds s6-finish --service=web` unmounts lazily and removes the
+`--allow-null` is given, and one that carries no name is always refused. The `--source` directory is
+judged like the host key: owned by root, not writable by group or others, no symbolic link in
+the path or among its files, every directory above it too; anything else is refused before a
+credential is decrypted. `sdcreds s6-finish --service=web` unmounts lazily and removes the
 directory; it is idempotent. At most 1024 credentials and 16 MiB per service.
 Linux only; elsewhere the commands report `ErrUnsupported`.
 
@@ -187,6 +190,79 @@ unchanged; the interop test reads `/proc/self/status` of the service and of
   of `s6-run` (which cannot be caught) leaves the mount in place, and it stays
   until `sdcreds s6-finish` runs (put it in the finish script of the service). The
   default, a private namespace, has no such leftover.
+
+## `sdcreds run`: OpenBSD (and Linux)
+
+`sdcreds run --service=web --user=svc --source=/etc/creds [--class=daemon] -- /usr/local/bin/web`
+decrypts the sealed files of `--source`, makes them visible to the program as read-only files
+owned by `--user` under `$CREDENTIALS_DIRECTORY`, runs it as that user and removes them when it
+ends. On Linux it is `s6-run` with the same flags. `--check` runs every refusal and decrypts
+nothing (use it in an rc.d `rc_pre`). A refusal exits with status 2 and happens before the host
+key is read.
+
+On OpenBSD the files live in a memory file system (MFS) mounted for the service, zeroed at the
+end. What to know:
+
+* **There is no mount namespace.** While the program runs the credentials are visible to every
+  process that can reach the directory, and root can always read them.
+* **The host key** is `/etc/sdcreds/host.key`, owned by root, mode 0600; any other mode or
+  owner is refused. Create it with `sdcreds setup --path /etc/sdcreds/host.key`, then
+  `chmod 600` it. The machine id is `sysctl hw.uuid`. `--secret` and `--machine-id-file`
+  override both; they are kept on purpose and go through the same ownership and mode checks.
+* **`--user` is never root**: uid 0, gid 0 and any supplementary group 0 are refused, in `run`
+  and in the library (`s6.Run`, `delivery`); there is no flag to allow it. The program must be
+  an absolute, normalised path that the user can execute.
+* **Killing sdcreds kills the program** and unmounts, even with SIGKILL. A helper process
+  holds the service lock and watches sdcreds; on any end it kills everything the service user
+  runs (by uid, so a program that called setsid does not escape) and then unmounts. The kill is
+  decided by root, not by a process running as the service user: the helper reads the kernel
+  process table for the REAL uid, stops every process it finds (a stopped process
+  cannot fork or signal), reads the table again until it no longer changes, then sends SIGKILL, and
+  repeats until the user has no process. A process whose effective uid only is the service
+  user's (a set-uid program of that user, run by someone else) is counted as "busy", so the start
+  is refused, but it is not killed. A pid that was stopped and then no longer names the same process
+  (same pid and start time) is resumed, never killed. The helper's first move, a `kill(-1)` from
+  a process running as the user, is best effort and is not limited to the real uid. A program that signals everything of its user in a loop
+  therefore does not stop it. When a process survives the budget (20 s), the helper still unmounts
+  (the secrets go), reports the failure and exits non-zero; Release never reports success while
+  processes of the user remain. A zombie (p_stat or PS_ZOMBIE) is not counted, so an unreaped
+  one does not make the user busy. Because the kill is by uid, a user is
+  owned by one delivery at a time: the lock of the user (`.uid-<N>.lock` in `/var/run/sdcreds`, held
+  by the helper too) refuses a second service for the same user, even with another `--base`, and
+  `run` refuses a user that already has other processes: give the service its own user. A fork bomb
+  is bounded by the class's `maxproc`, not by sdcreds. If sdcreds and the helper both die,
+  `sdcreds sweep [--base DIR] [--service S]` (or the next start of the service) removes the
+  leftover. When the helper is lost while the program runs, sdcreds kills the program and exits
+  non-zero. When the program ends but the release fails, sdcreds exits with status 70 (or the
+  program's own status when that was already a failure) and says why on stderr.
+* **Swap must be encrypted.** The credentials are in memory, so `run` refuses to start when
+  `sysctl vm.swapencrypt.enable` is 0, or cannot be read; a kernel without the variable is a
+  refusal too (sysctl(2) documents the variable, 1 enables and 0 disables, and does not say that
+  its absence means encrypted swap). There is no flag to override it. In the library, `s6.Config`
+  needs a `ReadSource` (the command gives the trust-walked reader), or `s6.Run` refuses.
+* **The embedded file-system images are pinned**: the sha256 of each `delivery/images/ffs-<N>MiB.gz`
+  is in `delivery/images_manifest.go`, checked before the helper decompresses an image, and a test
+  holds the table to the files.
+* **`--class`** is looked up in `/etc/login.conf.d/<class>` first, then `/etc/login.conf`
+  (`tc=` chains, `-cur`/`-max`, `@` negation); `login.conf.db` is not consulted. The resource
+  limits of the class are applied to the program, only ever lowering what it would have, and a
+  class that cannot be read or parsed is a refusal. Priority and umask are not applied; the
+  program gets umask 077.
+* **The program's environment is an allow-list**: PATH (a fixed default), CREDENTIALS_DIRECTORY,
+  LANG, TZ, TERM and LC_*. Descriptors above 2 are closed before it runs.
+* **Memory.** The plaintext is in the memory of the sdcreds process (Go heap) for a short time,
+  and in the buffer cache of the MFS no more than the file system holds. `mlockall` cannot be
+  used from a Go process on OpenBSD (it fails with ENOMEM at the default and at the hard
+  RLIMIT_MEMLOCK, measured on 8.0), so the region is not locked: protection is
+  `vm.swapencrypt.enable` (on by default, and checked at start), core dumps off (RLIMIT_CORE 0 in sdcreds and the
+  helper) and `kern.nosuidcoredump`. A crash dump taken by an administrator can still contain
+  the plaintext. The buffer cache and the heap were not inspected for residue after the end.
+* `setlogin` is not called: the program runs as the target user, which cannot call it.
+* `--keep-cap` is Linux only.
+
+`docs/openbsd/authn_bridge` is an rc.d script that runs go-authn/bridge this way
+(`authn-bridge serve --config /etc/authn-bridge`, user `authn-bridge`, credential
+`smtp-password`). The delivery is also a library, package `delivery`.
 
 ## Safety
 

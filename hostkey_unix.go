@@ -45,7 +45,11 @@ func readHostSecret(path string) ([]byte, error) {
 
 // readHostSecretFile judges and reads an open host secret, from the descriptor
 // alone: nothing here opens a path (f.Name() is only used in messages).
-func readHostSecretFile(f *os.File) ([]byte, error) {
+func readHostSecretFile(f *os.File) ([]byte, error) { return readHostSecretFileMode(f, 0o400) }
+
+// readHostSecretFileMode is readHostSecretFile for a file whose mode must be
+// exactly mode (0400 for systemd's file, 0600 for the OpenBSD host key).
+func readHostSecretFileMode(f *os.File, mode os.FileMode) ([]byte, error) {
 	path := f.Name()
 	fi, err := f.Stat()
 	if err != nil {
@@ -67,8 +71,8 @@ func readHostSecretFile(f *os.File) ([]byte, error) {
 		return nil, fmt.Errorf("sdcreds: %s was deleted", path)
 	case links > 1:
 		return nil, fmt.Errorf("sdcreds: %s has too many links, refusing", path)
-	case fi.Mode() != 0o400: // permission bits and setuid/setgid/sticky alike
-		return nil, fmt.Errorf("sdcreds: %s has permissive access mode, refusing (want 0400)", path)
+	case fi.Mode() != mode: // permission bits and setuid/setgid/sticky alike
+		return nil, fmt.Errorf("sdcreds: %s has access mode %v, refusing (want %04o)", path, fi.Mode(), uint32(mode))
 	case size < 16+1:
 		return nil, fmt.Errorf("sdcreds: %s is too small, refusing", path)
 	case size > HostSecretMax:

@@ -45,6 +45,9 @@ var ErrUnsupported = errors.New("s6: not supported on " + runtime.GOOS)
 var ErrNotMounted = errors.New("s6: not a mount point")
 
 // User is a resolved service account.
+// ErrRootService is the refusal to run a service as uid 0, gid 0 or with group 0.
+var ErrRootService = errors.New("s6: the service must not run as root or with group 0")
+
 type User struct {
 	UID, GID int
 	Groups   []int
@@ -118,7 +121,11 @@ type Config struct {
 	User    string
 	BaseDir string // absolute; the credentials live in BaseDir/Service
 	Source  string // directory of encrypted credentials, one file each
-	Unshare bool
+	// ReadSource, when set, reads the sealed credentials of Source instead of
+	// this package: the command sets it to a reader that judges the path (root-
+	// owned, no link, not writable by others) before anything is decrypted.
+	ReadSource func(dir string) ([]Sealed, error)
+	Unshare    bool
 	// KeepCaps are capabilities the service keeps (see ParseKeepCaps); each must be
 	// on the allowlist, which Run checks before anything is decrypted or mounted.
 	// None (the default): the service has an empty capability set.
@@ -164,33 +171,47 @@ func wipe(es []entry) {
 // load decrypts every credential of the source directory before anything is
 // mounted, so a bad credential leaves nothing behind.
 func load(c Config) ([]entry, error) {
-	ents, err := os.ReadDir(c.Source)
+	if c.ReadSource == nil {
+		return nil, ErrNoReadSource
+	}
+	return loadSealed(c)
+}
+
+// ErrNoReadSource is a Config without ReadSource: this package does not walk the
+// path of the source (root-owned ancestors, no link), so it does not read one
+// unjudged; the caller gives the reader that does (delivery.ReadSourceTrusted,
+// which this package cannot import).
+var ErrNoReadSource = errors.New("s6: Config.ReadSource is not set: the source directory is read only by a reader that judges its path")
+
+// Sealed is one encrypted credential as ReadSource returns it.
+type Sealed struct {
+	Name string
+	Data []byte
+}
+
+// loadSealed decrypts what Config.ReadSource returned, with the same limits.
+func loadSealed(c Config) ([]entry, error) {
+	sealed, err := c.ReadSource(c.Source)
 	if err != nil {
 		return nil, err
 	}
-	if len(ents) > MaxEntries {
-		return nil, fmt.Errorf("s6: %s holds %d entries, at most %d", c.Source, len(ents), MaxEntries)
+	if len(sealed) > MaxEntries {
+		return nil, fmt.Errorf("s6: %s holds %d entries, at most %d", c.Source, len(sealed), MaxEntries)
 	}
 	var out []entry
 	total := 0
-	for _, e := range ents {
-		name := e.Name()
-		if !sdcreds.NameValid(name) {
+	for _, s := range sealed {
+		if !sdcreds.NameValid(s.Name) {
 			wipe(out)
-			return nil, fmt.Errorf("s6: %q is not a valid credential name", name)
+			return nil, fmt.Errorf("s6: %q is not a valid credential name", s.Name)
 		}
-		raw, err := readLimited(filepath.Join(c.Source, name))
+		pt, err := c.Decrypt(s.Name, s.Data)
 		if err != nil {
 			wipe(out)
-			return nil, err
-		}
-		pt, err := c.Decrypt(name, raw)
-		if err != nil {
-			wipe(out)
-			return nil, fmt.Errorf("s6: credential %q: %w", name, err)
+			return nil, fmt.Errorf("s6: credential %q: %w", s.Name, err)
 		}
 		total += len(pt)
-		out = append(out, entry{name, pt})
+		out = append(out, entry{s.Name, pt})
 		if total > MaxTotal {
 			wipe(out)
 			return nil, fmt.Errorf("s6: credentials of %s exceed %d bytes: %w", c.Service, MaxTotal, sdcreds.ErrTooLarge)
@@ -275,6 +296,16 @@ func Run(c Config, ops Ops) (err error) {
 	u, err := ops.LookupUser(c.User)
 	if err != nil {
 		return fmt.Errorf("s6: user %q: %w", c.User, err)
+	}
+	// The service never runs as root, as group 0 or with group 0, whoever called
+	// Run: the refusal lives here and not only in the command line plan.
+	if u.UID <= 0 || u.GID <= 0 {
+		return fmt.Errorf("%w: user %q has uid %d gid %d", ErrRootService, c.User, u.UID, u.GID)
+	}
+	for _, g := range u.Groups {
+		if g <= 0 {
+			return fmt.Errorf("%w: user %q is in group %d", ErrRootService, c.User, g)
+		}
 	}
 	u.Keep = c.KeepCaps
 	// A command that cannot be found is learned before anything is mounted: after

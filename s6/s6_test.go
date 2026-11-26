@@ -159,7 +159,39 @@ func config(t *testing.T) Config {
 		Service: "web", User: "svc", BaseDir: t.TempDir(), Source: src,
 		Command: []string{"/bin/web", "--serve"},
 		Env:     []string{"PATH=/bin", EnvVar + "=/stale", "HOME=/x"},
-		Decrypt: nullDecrypt,
+		Decrypt: nullDecrypt, ReadSource: readDirPlain,
+	}
+}
+
+// readDirPlain reads a source directory without judging its path: the tests'
+// reader (the command gives the trust-walked one).
+func readDirPlain(dir string) ([]Sealed, error) {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []Sealed
+	for _, e := range ents {
+		raw, err := readLimited(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, Sealed{e.Name(), raw})
+	}
+	return out, nil
+}
+
+// T6: no ReadSource, no unjudged read: nothing is decrypted or mounted.
+func TestRunRefusesWithoutAReadSource(t *testing.T) {
+	r, c := newRig(t), config(t)
+	c.ReadSource = nil
+	if err := Run(c, r.ops()); !errors.Is(err, ErrNoReadSource) {
+		t.Fatalf("%v", err)
+	}
+	for _, call := range r.calls {
+		if call == "mount" || call == "exec" {
+			t.Fatalf("went on: %v", r.calls)
+		}
 	}
 }
 
@@ -215,6 +247,27 @@ func TestRunWithoutUnshare(t *testing.T) {
 	r, c := newRig(t), config(t)
 	if err := Run(c, r.ops()); !errors.Is(err, errExec) || slices.Contains(r.calls, "unshare") {
 		t.Errorf("%v %v", err, r.calls)
+	}
+}
+
+func TestRunRefusesARootServiceIdentity(t *testing.T) {
+	for name, u := range map[string]User{
+		"uid 0":       {UID: 0, GID: 100},
+		"gid 0":       {UID: 100, GID: 0},
+		"group 0":     {UID: 100, GID: 100, Groups: []int{5, 0}},
+		"negative id": {UID: -1, GID: 100},
+	} {
+		r, c := newRig(t), config(t)
+		r.user = u
+		err := Run(c, r.ops())
+		if !errors.Is(err, ErrRootService) || slices.Contains(r.calls, "unshare") || slices.Contains(r.calls, "mount") {
+			t.Errorf("%s: %v %v", name, err, r.calls)
+		}
+	}
+	r, c := newRig(t), config(t)
+	r.user = User{UID: 100, GID: 100, Groups: []int{5, 6}}
+	if err := Run(c, r.ops()); errors.Is(err, ErrRootService) {
+		t.Errorf("an ordinary identity was refused: %v", err)
 	}
 }
 
