@@ -159,7 +159,39 @@ func config(t *testing.T) Config {
 		Service: "web", User: "svc", BaseDir: t.TempDir(), Source: src,
 		Command: []string{"/bin/web", "--serve"},
 		Env:     []string{"PATH=/bin", EnvVar + "=/stale", "HOME=/x"},
-		Decrypt: nullDecrypt,
+		Decrypt: nullDecrypt, ReadSource: readDirPlain,
+	}
+}
+
+// readDirPlain reads a source directory without judging its path: the tests'
+// reader (the command gives the trust-walked one).
+func readDirPlain(dir string) ([]Sealed, error) {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []Sealed
+	for _, e := range ents {
+		raw, err := readLimited(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, Sealed{e.Name(), raw})
+	}
+	return out, nil
+}
+
+// T6: no ReadSource, no unjudged read: nothing is decrypted or mounted.
+func TestRunRefusesWithoutAReadSource(t *testing.T) {
+	r, c := newRig(t), config(t)
+	c.ReadSource = nil
+	if err := Run(c, r.ops()); !errors.Is(err, ErrNoReadSource) {
+		t.Fatalf("%v", err)
+	}
+	for _, call := range r.calls {
+		if call == "mount" || call == "exec" {
+			t.Fatalf("went on: %v", r.calls)
+		}
 	}
 }
 

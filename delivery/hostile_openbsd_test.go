@@ -124,7 +124,7 @@ func TestProcessTableListsProcesses(t *testing.T) {
 	}
 	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
 	ps, err := listUID(testUID)
-	if err != nil || len(ps) != 1 || ps[0] != cmd.Process.Pid {
+	if err != nil || len(ps) != 1 || ps[0].pid != cmd.Process.Pid {
 		t.Fatalf("processes of uid %d: %v %v, want [%d]", testUID, ps, err, cmd.Process.Pid)
 	}
 	if err := VerifyOnlyProcess(testUID, cmd.Process.Pid); err != nil {

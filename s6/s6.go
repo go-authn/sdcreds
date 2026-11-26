@@ -171,43 +171,17 @@ func wipe(es []entry) {
 // load decrypts every credential of the source directory before anything is
 // mounted, so a bad credential leaves nothing behind.
 func load(c Config) ([]entry, error) {
-	if c.ReadSource != nil {
-		return loadSealed(c)
+	if c.ReadSource == nil {
+		return nil, ErrNoReadSource
 	}
-	ents, err := os.ReadDir(c.Source)
-	if err != nil {
-		return nil, err
-	}
-	if len(ents) > MaxEntries {
-		return nil, fmt.Errorf("s6: %s holds %d entries, at most %d", c.Source, len(ents), MaxEntries)
-	}
-	var out []entry
-	total := 0
-	for _, e := range ents {
-		name := e.Name()
-		if !sdcreds.NameValid(name) {
-			wipe(out)
-			return nil, fmt.Errorf("s6: %q is not a valid credential name", name)
-		}
-		raw, err := readLimited(filepath.Join(c.Source, name))
-		if err != nil {
-			wipe(out)
-			return nil, err
-		}
-		pt, err := c.Decrypt(name, raw)
-		if err != nil {
-			wipe(out)
-			return nil, fmt.Errorf("s6: credential %q: %w", name, err)
-		}
-		total += len(pt)
-		out = append(out, entry{name, pt})
-		if total > MaxTotal {
-			wipe(out)
-			return nil, fmt.Errorf("s6: credentials of %s exceed %d bytes: %w", c.Service, MaxTotal, sdcreds.ErrTooLarge)
-		}
-	}
-	return out, nil
+	return loadSealed(c)
 }
+
+// ErrNoReadSource is a Config without ReadSource: this package does not walk the
+// path of the source (root-owned ancestors, no link), so it does not read one
+// unjudged; the caller gives the reader that does (delivery.ReadSourceTrusted,
+// which this package cannot import).
+var ErrNoReadSource = errors.New("s6: Config.ReadSource is not set: the source directory is read only by a reader that judges its path")
 
 // Sealed is one encrypted credential as ReadSource returns it.
 type Sealed struct {

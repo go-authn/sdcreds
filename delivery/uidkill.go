@@ -36,11 +36,15 @@ func giveUpAfter(d time.Duration, f func()) bool {
 // procOps is what the root-side kill needs from the system; the tests give it a
 // scripted process table.
 type procOps struct {
-	// list returns the pids whose real or effective uid is uid.
-	list   func(uid int) ([]int, error)
-	signal func(pid int, sig syscall.Signal) error
-	sleep  func(time.Duration)
-	now    func() time.Time
+	// list returns the live processes whose real or effective uid is uid: what
+	// makes a start refuse.
+	list func(uid int) ([]proc, error)
+	// listReal returns those whose REAL uid is uid: what the kill goes by. A
+	// process of another user that has uid as its effective uid only is not killed.
+	listReal func(uid int) ([]proc, error)
+	signal   func(pid int, sig syscall.Signal) error
+	sleep    func(time.Duration)
+	now      func() time.Time
 }
 
 const (
@@ -64,20 +68,20 @@ func killAllOf(uid int, o procOps) error {
 	}
 	deadline := o.now().Add(rootKillBudget)
 	var sigErr error
-	send := func(pids []int, sig syscall.Signal) {
-		for _, p := range pids {
+	send := func(ps []proc, sig syscall.Signal) {
+		for _, pr := range ps {
 			// pid 0 and 1 are never signalled whatever the table says; ESRCH is the
 			// process having already gone.
-			if p <= 1 || p == os.Getpid() {
+			if pr.pid <= 1 || pr.pid == os.Getpid() {
 				continue
 			}
-			if err := o.signal(p, sig); err != nil && !errors.Is(err, unix.ESRCH) {
+			if err := o.signal(pr.pid, sig); err != nil && !errors.Is(err, unix.ESRCH) {
 				sigErr = err
 			}
 		}
 	}
 	for {
-		pids, err := o.list(uid)
+		pids, err := o.listReal(uid)
 		if err != nil {
 			return fmt.Errorf("delivery: listing the processes of uid %d: %w", uid, err)
 		}
@@ -86,10 +90,20 @@ func killAllOf(uid int, o procOps) error {
 		}
 		for pass := 0; pass < stopPasses; pass++ {
 			send(pids, unix.SIGSTOP)
-			again, err := o.list(uid)
+			again, err := o.listReal(uid)
 			if err != nil {
 				return fmt.Errorf("delivery: listing the processes of uid %d: %w", uid, err)
 			}
+			// A pid that was stopped and is not the same process of the user any
+			// more (it exited and the pid was given to another process between the
+			// list and the stop) is resumed: root must not leave a stranger stopped.
+			var strangers []proc
+			for _, p := range pids {
+				if !containsProc(again, p) {
+					strangers = append(strangers, p)
+				}
+			}
+			send(strangers, unix.SIGCONT)
 			settled := sameSet(pids, again)
 			pids = again
 			if settled {
@@ -108,23 +122,44 @@ func killAllOf(uid int, o procOps) error {
 	}
 }
 
-func sameSet(a, b []int) bool {
+func containsProc(s []proc, p proc) bool { return slices.Contains(s, p) }
+
+func sameSet(a, b []proc) bool {
 	a, b = slices.Clone(a), slices.Clone(b)
-	slices.Sort(a)
-	slices.Sort(b)
+	less := func(x, y proc) int {
+		if x.pid != y.pid {
+			return x.pid - y.pid
+		}
+		switch {
+		case x.start < y.start:
+			return -1
+		case x.start > y.start:
+			return 1
+		}
+		return 0
+	}
+	slices.SortFunc(a, less)
+	slices.SortFunc(b, less)
 	return slices.Equal(a, b)
 }
 
-// onlyProcess reports ErrUIDBusy unless pid is the one process of uid.
+// onlyProcess reports ErrUIDBusy unless pid is the one process of uid, and is
+// listed: an empty table is not the program being alone, it is a table that does
+// not show the program, which a wrong layout would produce.
 func onlyProcess(uid, pid int, o procOps) error {
 	pids, err := o.list(uid)
 	if err != nil {
 		return fmt.Errorf("delivery: listing the processes of uid %d: %w", uid, err)
 	}
+	found := false
 	for _, p := range pids {
-		if p != pid {
-			return fmt.Errorf("%w: uid %d has process %d besides the program", ErrUIDBusy, uid, p)
+		if p.pid != pid {
+			return fmt.Errorf("%w: uid %d has process %d besides the program", ErrUIDBusy, uid, p.pid)
 		}
+		found = true
+	}
+	if !found {
+		return fmt.Errorf("%w: the process table of uid %d does not list the program (pid %d)", ErrUIDBusy, uid, pid)
 	}
 	return nil
 }

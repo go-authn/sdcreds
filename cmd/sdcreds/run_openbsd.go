@@ -35,14 +35,16 @@ var hwUUID = func() ([16]byte, error) {
 func init() { runFlow = openbsdFlow }
 
 // swapEncrypt is `sysctl vm.swapencrypt.enable`; a seam for the tests. A kernel
-// without the variable (ENOENT) swaps encrypted always.
+// without the variable (ENOENT) is an error, not "encrypted": sysctl(2) of
+// OpenBSD 8.0 documents SWPENC_ENABLE as an existing node (1 enables, 0
+// disables) and says nothing of an absent node meaning encrypted swap.
 var swapEncrypt = func() (int, error) {
-	n, err := unix.SysctlUint32("vm.swapencrypt.enable")
-	if errors.Is(err, unix.ENOENT) {
-		return 1, nil
-	}
+	n, err := sysctlUint32("vm.swapencrypt.enable")
 	return int(n), err
 }
+
+// sysctlUint32 is the kernel read under swapEncrypt; a seam for the tests.
+var sysctlUint32 = unix.SysctlUint32
 
 // errSwapUnencrypted refuses a run on a host whose swap is not encrypted: the
 // credentials live in memory, and an unencrypted swap would write them to disk.

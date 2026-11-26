@@ -85,7 +85,7 @@ const (
 )
 
 // listKern returns the pids that sysctl kern.proc reports for one selector.
-func listKern(op, id int) ([]int, error) {
+func listKern(op, id int) ([]proc, error) {
 	for count := procChunk; count <= procMax; count *= 2 {
 		buf, err := unix.SysctlRaw("kern.proc", op, id, kinfoSize, count)
 		if err != nil {
@@ -104,15 +104,15 @@ func listKern(op, id int) ([]int, error) {
 // what the target's processes have; a program that runs with the target as its
 // effective uid only (a set-uid file of that user) is the same user to this
 // delivery.
-func listUID(uid int) ([]int, error) {
-	var all []int
+func listUID(uid int) ([]proc, error) {
+	var all []proc
 	for _, op := range []int{kernProcRUID, kernProcUID} {
 		ps, err := listKern(op, uid)
 		if err != nil {
 			return nil, err
 		}
 		for _, p := range ps {
-			if !containsInt(all, p) {
+			if !containsPid(all, p.pid) {
 				all = append(all, p)
 			}
 		}
@@ -120,9 +120,14 @@ func listUID(uid int) ([]int, error) {
 	return all, nil
 }
 
-func containsInt(s []int, v int) bool {
+// listRealUID is every process whose REAL uid is uid: what the kill goes by. A
+// process of another user that runs with this uid as its effective uid only is
+// counted by listUID (the start is refused) and is not killed.
+func listRealUID(uid int) ([]proc, error) { return listKern(kernProcRUID, uid) }
+
+func containsPid(s []proc, pid int) bool {
 	for _, x := range s {
-		if x == v {
+		if x.pid == pid {
 			return true
 		}
 	}
@@ -137,17 +142,18 @@ func checkProcLayout() error {
 	if err != nil {
 		return fmt.Errorf("delivery: reading the process table: %w", err)
 	}
-	if !containsInt(ps, os.Getpid()) {
+	if !containsPid(ps, os.Getpid()) {
 		return errors.New("delivery: the process table does not list this process: struct kinfo_proc is not the one expected")
 	}
 	return nil
 }
 
 var realProcs = procOps{
-	list:   listUID,
-	signal: func(pid int, sig syscall.Signal) error { return unix.Kill(pid, sig) },
-	sleep:  time.Sleep,
-	now:    time.Now,
+	list:     listUID,
+	listReal: listRealUID,
+	signal:   func(pid int, sig syscall.Signal) error { return unix.Kill(pid, sig) },
+	sleep:    time.Sleep,
+	now:      time.Now,
 }
 
 // UIDBusy reports whether the user has any process, read by root from the

@@ -29,10 +29,43 @@ type fakeTable struct {
 	protect   map[int]int // pid -> SIGKILLs it survives
 	listErr   error
 	sigErr    error
+	euidOnly  map[int]bool // listed by list, not by listReal
+	starts    map[int]uint64
+	// onStop, when set, runs after pid is sent SIGSTOP: a test makes the pid
+	// change hands there.
+	onStop func(pid int)
+}
+
+func (f *fakeTable) listAll(real bool) ([]proc, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	// A loop that ignores its budget ends here with an error, so a
+	// mutant that never gives up fails a test instead of hanging it.
+	if f.clock.After(time.Unix(1000, 0).Add(2 * rootKillBudget)) {
+		return nil, errors.New("fake: the clock ran past twice the budget")
+	}
+	if f.forkEvery > 0 {
+		for p := range f.live {
+			if !f.stopped[p] {
+				f.nextPID++
+				f.live[f.nextPID] = true
+				break
+			}
+		}
+	}
+	var out []proc
+	for p := range f.live {
+		if real && f.euidOnly[p] {
+			continue
+		}
+		out = append(out, proc{pid: p, start: f.starts[p]})
+	}
+	return out, nil
 }
 
 func newTable(pids ...int) *fakeTable {
-	f := &fakeTable{live: map[int]bool{}, stopped: map[int]bool{}, clock: time.Unix(1000, 0), nextPID: 1000, protect: map[int]int{}}
+	f := &fakeTable{live: map[int]bool{}, stopped: map[int]bool{}, clock: time.Unix(1000, 0), nextPID: 1000, protect: map[int]int{}, euidOnly: map[int]bool{}, starts: map[int]uint64{}}
 	for _, p := range pids {
 		f.live[p] = true
 	}
@@ -41,30 +74,8 @@ func newTable(pids ...int) *fakeTable {
 
 func (f *fakeTable) ops() procOps {
 	return procOps{
-		list: func(uid int) ([]int, error) {
-			if f.listErr != nil {
-				return nil, f.listErr
-			}
-			// A loop that ignores its budget ends here with an error, so a
-			// mutant that never gives up fails a test instead of hanging it.
-			if f.clock.After(time.Unix(1000, 0).Add(2 * rootKillBudget)) {
-				return nil, errors.New("fake: the clock ran past twice the budget")
-			}
-			if f.forkEvery > 0 {
-				for p := range f.live {
-					if !f.stopped[p] {
-						f.nextPID++
-						f.live[f.nextPID] = true
-						break
-					}
-				}
-			}
-			var out []int
-			for p := range f.live {
-				out = append(out, p)
-			}
-			return out, nil
-		},
+		list:     func(uid int) ([]proc, error) { return f.listAll(false) },
+		listReal: func(uid int) ([]proc, error) { return f.listAll(true) },
 		signal: func(pid int, sig syscall.Signal) error {
 			f.sent = append(f.sent, sigName(sig)+":"+itoa(pid))
 			if f.sigErr != nil {
@@ -76,6 +87,9 @@ func (f *fakeTable) ops() procOps {
 			switch sig {
 			case unix.SIGSTOP:
 				f.stopped[pid] = true
+				if f.onStop != nil {
+					f.onStop(pid)
+				}
 			case unix.SIGKILL:
 				if f.protect[pid] > 0 {
 					f.protect[pid]--
@@ -96,6 +110,8 @@ func sigName(s syscall.Signal) string {
 		return "STOP"
 	case unix.SIGKILL:
 		return "KILL"
+	case unix.SIGCONT:
+		return "CONT"
 	}
 	return "?"
 }
@@ -205,8 +221,8 @@ func TestKillAllOfTableErrors(t *testing.T) {
 	// An error on the second read, inside the freeze.
 	calls := 0
 	o := newTable(10).ops()
-	inner := o.list
-	o.list = func(uid int) ([]int, error) {
+	inner := o.listReal
+	o.listReal = func(uid int) ([]proc, error) {
 		calls++
 		if calls == 2 {
 			return nil, boom
@@ -236,13 +252,86 @@ func TestKillAllOfNeverSignalsInitOrItself(t *testing.T) {
 	}
 }
 
+// T3: the kill goes by REAL uid; a process of another user that has the uid as
+// its effective uid only is counted by the busy check and is not signalled.
+func TestKillAllOfSignalsRealUIDOnly(t *testing.T) {
+	f := newTable(10, 11)
+	f.euidOnly[11] = true
+	if err := killAllOf(5000, f.ops()); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range f.sent {
+		if strings.HasSuffix(s, ":11") {
+			t.Fatalf("signalled the effective-uid-only process: %v", f.sent)
+		}
+	}
+	if !f.live[11] || f.live[10] {
+		t.Fatalf("live %v", f.live)
+	}
+	if b, err := busyOf(5000, f.ops()); err != nil || !b {
+		t.Fatalf("the effective-uid-only process must still make the start refuse: %v %v", b, err)
+	}
+}
+
+// T2: a pid that was stopped and is gone from the user's table at the next read
+// (it exited and the pid went to another process) is resumed.
+func TestKillAllOfResumesAStrangerItStopped(t *testing.T) {
+	f := newTable(10, 11)
+	f.onStop = func(pid int) {
+		if pid == 10 {
+			delete(f.live, 10) // 10 left the user: its pid is now somebody else's
+		}
+	}
+	if err := killAllOf(5000, f.ops()); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(f.sent, "CONT:10") {
+		t.Fatalf("sent %v: no SIGCONT for the pid that left the user", f.sent)
+	}
+	if slices.Contains(f.sent, "CONT:11") {
+		t.Fatalf("sent %v: resumed a process that is still the user's", f.sent)
+	}
+}
+
+// T2: the same pid with another starting time is another process.
+func TestKillAllOfResumesAPidThatChangedHands(t *testing.T) {
+	f := newTable(10)
+	f.onStop = func(pid int) {
+		f.starts[pid] = 99 // a new process under the same pid, also of the user
+		f.onStop = nil
+	}
+	if err := killAllOf(5000, f.ops()); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(f.sent, "CONT:10") {
+		t.Fatalf("sent %v: the old process's stop was not undone", f.sent)
+	}
+}
+
+// T5: an empty table does not show the program, so it is not "alone".
+func TestOnlyProcessRefusesAnEmptyTable(t *testing.T) {
+	if err := onlyProcess(5000, 10, newTable().ops()); !errors.Is(err, ErrUIDBusy) {
+		t.Fatalf("got %v", err)
+	}
+}
+
 func TestSameSet(t *testing.T) {
-	if !sameSet([]int{3, 1, 2}, []int{1, 2, 3}) || sameSet([]int{1}, []int{1, 2}) || sameSet([]int{1, 2}, []int{1, 3}) {
+	p := func(ns ...int) []proc {
+		var out []proc
+		for _, n := range ns {
+			out = append(out, proc{pid: n})
+		}
+		return out
+	}
+	if !sameSet(p(3, 1, 2), p(1, 2, 3)) || sameSet(p(1), p(1, 2)) || sameSet(p(1, 2), p(1, 3)) {
 		t.Fatal("sameSet")
 	}
-	a := []int{2, 1}
-	sameSet(a, []int{1, 2})
-	if a[0] != 2 {
+	if sameSet([]proc{{pid: 1, start: 5}}, []proc{{pid: 1, start: 6}}) {
+		t.Fatal("the same pid with another start is not the same process")
+	}
+	a := p(2, 1)
+	sameSet(a, p(1, 2))
+	if a[0].pid != 2 {
 		t.Fatal("sameSet sorted its argument")
 	}
 }

@@ -696,8 +696,17 @@ func TestSweepCommand(t *testing.T) {
 	}
 }
 
-// Unencrypted swap refuses the run; a variable the kernel does not have means
-// swap is always encrypted; a read that fails refuses too.
+// T5: a kernel without the variable is a refusal, never "encrypted".
+func TestMissingSwapEncryptVariableRefuses(t *testing.T) {
+	old := sysctlUint32
+	defer func() { sysctlUint32 = old }()
+	sysctlUint32 = func(string) (uint32, error) { return 0, unix.ENOENT }
+	if err := checkSwapEncrypted(); !errors.Is(err, unix.ENOENT) {
+		t.Fatalf("missing variable: %v", err)
+	}
+}
+
+// Unencrypted swap refuses the run; a read that fails refuses too.
 func TestCheckSwapEncrypted(t *testing.T) {
 	old := swapEncrypt
 	defer func() { swapEncrypt = old }()

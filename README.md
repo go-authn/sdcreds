@@ -216,13 +216,17 @@ end. What to know:
   holds the service lock and watches sdcreds; on any end it kills everything the service user
   runs (by uid, so a program that called setsid does not escape) and then unmounts. The kill is
   decided by root, not by a process running as the service user: the helper reads the kernel
-  process table for the real and the effective uid, stops every process it finds (a stopped process
+  process table for the REAL uid, stops every process it finds (a stopped process
   cannot fork or signal), reads the table again until it no longer changes, then sends SIGKILL, and
-  repeats until the user has no process. A program that signals everything of its user in a loop
+  repeats until the user has no process. A process whose effective uid only is the service
+  user's (a set-uid program of that user, run by someone else) is counted as "busy", so the start
+  is refused, but it is not killed. A pid that was stopped and then no longer names the same process
+  (same pid and start time) is resumed, never killed. The helper's first move, a `kill(-1)` from
+  a process running as the user, is best effort and is not limited to the real uid. A program that signals everything of its user in a loop
   therefore does not stop it. When a process survives the budget (20 s), the helper still unmounts
   (the secrets go), reports the failure and exits non-zero; Release never reports success while
-  processes of the user remain. A zombie is not told apart from a live process, so one that a
-  parent never reaped makes the user "busy" until it is. Because the kill is by uid, a user is
+  processes of the user remain. A zombie (p_stat or PS_ZOMBIE) is not counted, so an unreaped
+  one does not make the user busy. Because the kill is by uid, a user is
   owned by one delivery at a time: the lock of the user (`.uid-<N>.lock` in `/var/run/sdcreds`, held
   by the helper too) refuses a second service for the same user, even with another `--base`, and
   `run` refuses a user that already has other processes: give the service its own user. A fork bomb
@@ -232,8 +236,10 @@ end. What to know:
   non-zero. When the program ends but the release fails, sdcreds exits with status 70 (or the
   program's own status when that was already a failure) and says why on stderr.
 * **Swap must be encrypted.** The credentials are in memory, so `run` refuses to start when
-  `sysctl vm.swapencrypt.enable` is 0, or cannot be read (a kernel without the variable swaps
-  encrypted always). There is no flag to override it.
+  `sysctl vm.swapencrypt.enable` is 0, or cannot be read; a kernel without the variable is a
+  refusal too (sysctl(2) documents the variable, 1 enables and 0 disables, and does not say that
+  its absence means encrypted swap). There is no flag to override it. In the library, `s6.Config`
+  needs a `ReadSource` (the command gives the trust-walked reader), or `s6.Run` refuses.
 * **The embedded file-system images are pinned**: the sha256 of each `delivery/images/ffs-<N>MiB.gz`
   is in `delivery/images_manifest.go`, checked before the helper decompresses an image, and a test
   holds the table to the files.
