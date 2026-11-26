@@ -65,3 +65,36 @@ func TestLoadFromAReadSource(t *testing.T) {
 		t.Fatalf("too much: %v", err)
 	}
 }
+
+// assertNoCrash runs f and fails the test, by an assertion, when f panics: a
+// guard that is deleted must show as a wrong value, not as a crash of the whole
+// test binary that hides every other assertion.
+func assertNoCrash(t *testing.T, f func()) {
+	t.Helper()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("crashed instead of refusing: %v", r)
+		}
+	}()
+	f()
+}
+
+// A Config without ReadSource is refused with ErrNoReadSource and no entries,
+// and one with a ReadSource is not: the guard is held on both sides, by values.
+func TestLoadRefusesAConfigWithoutAReadSource(t *testing.T) {
+	c := config(t)
+	c.ReadSource = nil
+	var es []entry
+	var err error
+	assertNoCrash(t, func() { es, err = load(c) })
+	if !errors.Is(err, ErrNoReadSource) || es != nil {
+		t.Fatalf("no ReadSource: entries %v, err %v", es, err)
+	}
+
+	called := false
+	c.ReadSource = func(string) ([]Sealed, error) { called = true; return nil, nil }
+	assertNoCrash(t, func() { es, err = load(c) })
+	if err != nil || len(es) != 0 || !called {
+		t.Fatalf("an empty source: entries %v, err %v, read %v", es, err, called)
+	}
+}
