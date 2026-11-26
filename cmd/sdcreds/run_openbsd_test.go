@@ -70,7 +70,31 @@ func newVM(t *testing.T) *vmEnv {
 	}
 	e.hostKey(0o600)
 	e.seal("smtp-password", "hunter2")
+	waitNoProcessesOf(t, targetUser)
 	return e
+}
+
+// waitNoProcessesOf waits until the user has no process: the helper of the
+// previous test kills what it left asynchronously after its sdcreds is gone, and
+// a run started before that is finished is refused (a target that has processes),
+// which on 7.9 showed as a run that exited at once with no output.
+func waitNoProcessesOf(t *testing.T, name string) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		err := exec.Command("pgrep", "-u", name).Run()
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && ee.ExitCode() == 1 {
+			return // pgrep: no process matched
+		}
+		if err != nil && !errors.As(err, &ee) {
+			t.Fatalf("pgrep: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("processes of %s still alive before the test", name)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 var hostKeyData []byte
@@ -446,7 +470,12 @@ func firstPIDs(t *testing.T, c *exec.Cmd, n int) []int {
 		pids = append(pids, p)
 	}
 	if len(pids) != n {
-		t.Fatalf("read %d pids, want %d", len(pids), n)
+		msg := ""
+		if b, ok := c.Stderr.(*bytes.Buffer); ok {
+			_ = c.Wait()
+			msg = ": " + b.String()
+		}
+		t.Fatalf("read %d pids, want %d%s", len(pids), n, msg)
 	}
 	return pids
 }
