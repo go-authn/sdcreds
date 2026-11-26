@@ -185,7 +185,9 @@ func readDirPlain(dir string) ([]Sealed, error) {
 func TestRunRefusesWithoutAReadSource(t *testing.T) {
 	r, c := newRig(t), config(t)
 	c.ReadSource = nil
-	if err := Run(c, r.ops()); !errors.Is(err, ErrNoReadSource) {
+	var err error
+	assertNoCrash(t, func() { err = Run(c, r.ops()) })
+	if !errors.Is(err, ErrNoReadSource) {
 		t.Fatalf("%v", err)
 	}
 	for _, call := range r.calls {
