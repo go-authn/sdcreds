@@ -72,7 +72,13 @@ func prepare(ctx context.Context, c Config) (d *Delivery, err error) {
 	// own the user. One that has processes already is refused, before anything
 	// is decrypted.
 	// The release needs the killer user: without it nothing could be killed.
-	if _, _, err := killerIDs(c.UID); err != nil {
+	// It must exist, must not be root or the target, and must own no process: a
+	// release that cannot kill is refused here, before anything is delivered.
+	killer, _, err := killerIDs(c.UID)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkKillerAtStart(c.UID, killer, rootKillBudget, realProcs); err != nil {
 		return nil, err
 	}
 	if busy, err := UIDBusy(c.UID); err != nil {

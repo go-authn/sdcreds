@@ -180,7 +180,12 @@ func checkProcLayout() error {
 	if !containsPid(ps, os.Getpid()) {
 		return errors.New("delivery: the process table does not list this process: struct kinfo_proc is not the one expected")
 	}
-	return nil
+	// The saved uid is read at an offset no selector confirms: this process's own
+	// three ids must come back as getresuid(2) gives them.
+	r, e, s := unix.Getresuid()
+	pid := os.Getpid()
+	_, err = listKernWith(kernProcAll, 0, func(buf []byte) ([]proc, error) { return nil, checkOwnIDs(buf, pid, r, e, s) })
+	return err
 }
 
 // realProcs reads the process table; it has no way to signal.
@@ -213,8 +218,9 @@ var lookupKiller = func() (uid, gid int, err error) {
 }
 
 // killerIDs is the killer identity for a delivery to uid, refused unless it can
-// be used. The "owns no process" check is made at the release, under the lock,
-// because the killer of a release that is running owns one.
+// be used: it exists, is not root and is not the target. That it owns no process
+// is checked at the start (checkKillerAtStart), not here: the killer of a release
+// that is running owns one.
 func killerIDs(uid int) (killer, gid int, err error) {
 	killer, gid, err = lookupKiller()
 	if err != nil {
@@ -227,8 +233,7 @@ func killerIDs(uid int) (killer, gid int, err error) {
 }
 
 // KillUID makes every process of the user go. The caller is root. One at a time
-// on the machine (the killers share a real uid, so two would signal each other),
-// a killer with split credentials sends SIGKILL by kill(-1) until the kernel has
+// per user (a kill of another user never makes this one wait or give up), a killer with split credentials sends SIGKILL by kill(-1) until the kernel has
 // nothing left it may signal; root only reads the process table, to run it again
 // or to report ErrUIDSurvives after the budget. gid and groups are the target's
 // and no longer used: the killer takes the group of the killer user.
@@ -240,15 +245,11 @@ func KillUID(exe string, uid, gid int, groups []int) error {
 	if err != nil {
 		return err
 	}
-	lock, err := lockKiller(killerLockPath, rootKillBudget)
-	if err != nil {
-		return err
-	}
-	defer lock.Close()
-	if err := checkKiller(uid, killer, realProcs.list); err != nil {
-		return err
-	}
+	// No "owns no process" check here: the killer of a release of another user
+	// runs at this very moment and owns one. The start made that check
+	// (checkKillerAtStart), and a killer user that owns a process is not a reason
+	// to leave the target's processes alive.
 	o := realProcs
 	o.kill = func(wait time.Duration) (int, error) { return runKiller(exe, uid, killer, kgid, wait) }
-	return killAllOf(uid, o)
+	return killLocked(uid, killerLockFile(uid), killLockWait, o)
 }

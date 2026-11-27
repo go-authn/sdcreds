@@ -108,6 +108,31 @@ func parseKinfoAll(buf []byte, uid int) ([]proc, error) {
 	return pids, nil
 }
 
+// checkOwnIDs reads the element of pid in a KERN_PROC_ALL answer and checks its
+// real, effective and saved uids against the ones the caller got from
+// getresuid(2). It is the layout check of the three uid offsets, including the
+// saved one that parseKinfoAll uses and no selector of the kernel confirms. The
+// limit, stated: when the three of the caller are equal (root: 0/0/0) a wrong
+// offset that reads another zero is not seen; the OpenBSD lane tests the saved
+// offset with a process whose three uids all differ.
+func checkOwnIDs(buf []byte, pid, ruid, euid, svuid int) error {
+	if len(buf)%kinfoSize != 0 {
+		return fmt.Errorf("delivery: the process table is %d bytes, not a multiple of %d: struct kinfo_proc is not the one expected", len(buf), kinfoSize)
+	}
+	for i := 0; i < len(buf)/kinfoSize; i++ {
+		e := buf[i*kinfoSize : (i+1)*kinfoSize]
+		if int(int32(binary.NativeEndian.Uint32(e[kinfoPidOff:]))) != pid {
+			continue
+		}
+		got := [3]int{int(binary.NativeEndian.Uint32(e[kinfoRUIDOf:])), int(binary.NativeEndian.Uint32(e[kinfoUIDOff:])), int(binary.NativeEndian.Uint32(e[kinfoSvUIDOff:]))}
+		if got != [3]int{ruid, euid, svuid} {
+			return fmt.Errorf("delivery: the process table lists this process with real/effective/saved uids %v, getresuid says %d/%d/%d: struct kinfo_proc is not the one expected", got, ruid, euid, svuid)
+		}
+		return nil
+	}
+	return fmt.Errorf("delivery: the process table does not list this process (pid %d): struct kinfo_proc is not the one expected", pid)
+}
+
 // parseKinfo reads the pids of a kern.proc answer of op for uid. Any element
 // whose uid does not match the selector, whose pid is not positive, or a buffer
 // that is not a whole number of elements, is an error: the layout is not the

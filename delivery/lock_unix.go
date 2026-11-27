@@ -41,10 +41,13 @@ func AcquireUIDLock(base string, uid int) (*Lock, error) {
 
 // TeardownWait is how long a start waits for the lock of its own service to be
 // free: the helper of a run that just ended holds it until it has killed the
-// user's processes and unmounted, which takes up to 20 s (root kill budget) plus
-// 1 s plus 5 s, so 30 s covers it. A lock that is still held after that is a run
-// that is alive, and the start is refused (ErrBusy).
-const TeardownWait = 30 * time.Second
+// user's processes and unmounted. That is at most teardownMax: the wait for a
+// kill of the same user (killLockWait), the kill itself (rootKillBudget) and the
+// time to reap its killer (1 s), then the wait for the unmount (unmountWait), and
+// one more second for the helper to exit. It is derived from those constants, so
+// it cannot fall behind them. A lock that is still held after that is a run that
+// is alive, and the start is refused (ErrBusy).
+const TeardownWait = teardownMax + time.Second
 
 // UIDLockGrace is how long a start waits for the lock of the user once it holds
 // the lock of its service: the helper of the previous run of the same service

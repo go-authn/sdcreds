@@ -51,7 +51,7 @@ func TestMain(m *testing.M) {
 		case "__sleeper":
 			time.Sleep(300 * time.Second)
 			os.Exit(0)
-		case "__killerhold", "__probe", "__split0", "__canary", "__forkstorm":
+		case "__killerhold", "__probe", "__split0", "__split3", "__canary", "__forkstorm":
 			killerHelperMain(os.Args[1], os.Args[2:])
 		}
 	}

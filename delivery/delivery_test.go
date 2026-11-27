@@ -625,8 +625,12 @@ func TestAcquireLockWaitsForATeardown(t *testing.T) {
 		t.Fatalf("released during the wait: %v", err)
 	}
 	l.Close()
-	if TeardownWait < 26*time.Second {
-		t.Fatalf("TeardownWait %v is shorter than the longest teardown (20 s + 1 s + 5 s)", TeardownWait)
+	// The longest teardown is computed from the constants the teardown is made of:
+	// the wait for a kill of the same user, its budget, the reaping of its
+	// killer, then the wait for the unmount.
+	longest := killLockWait + rootKillBudget + time.Second + unmountWait
+	if TeardownWait <= longest || teardownMax != longest || killTotal != killLockWait+rootKillBudget+time.Second {
+		t.Fatalf("TeardownWait %v does not cover the longest teardown %v", TeardownWait, longest)
 	}
 	// The user lock follows the same rule, and is for ONE service: held, it is
 	// refused after the grace.
