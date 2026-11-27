@@ -201,7 +201,7 @@ func TestPassThroughReachesTheProgram(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := `echo "$NOTIFY_SOCKET $LISTEN_FDS $LISTEN_PID ${HOME-unset} ${__SDCREDS_PASSFD-gone}"; echo passed >&` +
-		strconv.Itoa(fd) + `; echo leaked >&` + strconv.Itoa(leakFD) + ` 2>/dev/null && echo LEAK; true`
+		strconv.Itoa(fd) + `; ( echo leaked >&` + strconv.Itoa(leakFD) + ` ) 2>/dev/null && echo LEAK; true`
 	c := exec.Command(os.Args[0], "-test.run=^TestStubHelperProcess$")
 	c.Env = append(stubEnv([]string{"NOTIFY_SOCKET=/run/n.sock", "LISTEN_FDS=1", "LISTEN_PID=42", "HOME=/root"}, "/creds", "NOTIFY_SOCKET", "LISTEN_FDS", "LISTEN_PID"), stubHelperEnv+"="+script)
 	files := stubFiles(gateR, []int{fd}, &c.Env)
