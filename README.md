@@ -199,6 +199,10 @@ owned by `--user` under `$CREDENTIALS_DIRECTORY`, runs it as that user and remov
 ends. On Linux it is `s6-run` with the same flags. `--check` runs every refusal and decrypts
 nothing (use it in an rc.d `rc_pre`). A refusal happens before the host key is read.
 
+32-bit OpenBSD (i386, armv7) is refused: the build fails, on purpose, because the mount layout
+(`mfsArgsSize` 144 and the mount structures) is the LP64 one of amd64 and arm64 and has not been
+checked against the 32-bit headers. CI asserts the refusal.
+
 **Exit status of `sdcreds run`** (v0.4.0). The program's own status is passed through (a program
 killed by signal `n` gives `128+n`). sdcreds' own endings have reserved statuses, outside the
 0-2 and sysexits 64-78 ranges daemons commonly use, so a supervisor can tell them from the

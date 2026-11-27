@@ -67,6 +67,10 @@ jobs:
           go test -c -o /dev/null ./delivery/
           go test -c -o /dev/null ./cmd/sdcreds/
 
+  # 32-bit OpenBSD is refused at build time (delivery/refuse_openbsd_32bit.go); the
+  # test TestOpenBSD32bitIsRefused (delivery/refuse32_test.go, run by the test lane)
+  # builds for openbsd/386 and openbsd/arm and asserts the build FAILS with the reason.
+
   # A real OpenBSD: the mount, the daemon's exit, SIGKILL of sdcreds (which must
   # kill the daemon and unmount), the sweep of a leftover and the uid 0 refusal.
   # No secret is given to the VM; the host key it uses is made by the tests.
