@@ -208,15 +208,15 @@ program's:
 |---|---|
 | 125 | sdcreds **refused**: nothing was started (bad flag, unknown or root user, unencrypted swap, a run that is alive). Permanent until something changes: do not retry blindly. |
 | 126 | sdcreds **failed** after it began (delivery, helper lost, the program could not be executed). May be transient. |
-| 70 | the program ended but the **release** failed (processes or mount may be left). |
+| 70 | the **release** failed (processes or mount may be left), whatever the program's own status was; the program's status is then printed on stderr. |
 
 A program that itself exits 125 or 126 cannot be told apart from these; avoid them. Before v0.4.0
 a refusal exited 2 and a failure 1.
 
-**Restart.** A start waits up to 30 s for the previous run of the same service to finish
+**Restart.** A start waits up to 47 s for the previous run of the same service to finish
 tearing down (its helper holds the lock until the user's processes are killed and the
-mount is gone, which can take up to 26 s) instead of being refused. A run that is still alive after
-30 s is refused (125). A second service for the same user is still refused at once.
+mount is gone, which can take up to 46 s) instead of being refused. A run that is still alive after
+47 s is refused (125). A second service for the same user is still refused at once.
 
 **Passing the environment and descriptors (OpenBSD).** By default the program gets only `LANG`,
 `LC_*`, `TZ`, `TERM`, a fixed `PATH`, `CREDENTIALS_DIRECTORY` and descriptors 0-2. `--pass-env
@@ -249,11 +249,15 @@ end. What to know:
   killer user, effective uid of the service user) before it signals anything: the kernel then
   lets it signal every process of the service user, while no process of that user can signal it.
   The killer sends `kill(-1, SIGKILL)` until the kernel reports nothing left, and root only reads
-  the process table to see whether it must run again. Killers are serialised by a lock
-  (`/var/run/sdcreds-killer.lock`).
+  the process table to see whether it must run again. The kills of one service user are
+  serialised by a lock of that user (`/var/run/sdcreds-killer-<uid>.lock`); a kill of another user
+  never makes a release wait or give up. Two killers of different users can signal each other
+  (they share the killer's real uid): a killer that dies of it is run again, because the process
+  table decides, and a user that is not empty at the budget is reported.
   **Install requirement:** create the killer user, which must own no process and must not be root
   or a service user: `useradd -s /sbin/nologin -d /var/empty -c "sdcreds killer" _sdkill`. A
-  delivery is refused to start without it. A program that signals everything of its user in a
+  delivery is refused to start without it, or when it owns a process (a start waits up to 20 s
+  for the killer of a release that is running). A program that signals everything of its user in a
   loop does not stop the release. A process that holds the user only through a set-uid file run
   by another user is counted by the start check but is not reached by the killer: the release
   then reports that a process survived and the next start is refused until it is gone (this is
@@ -267,8 +271,8 @@ end. What to know:
   is bounded by the class's `maxproc`, not by sdcreds. If sdcreds and the helper both die,
   `sdcreds sweep [--base DIR] [--service S]` (or the next start of the service) removes the
   leftover. When the helper is lost while the program runs, sdcreds kills the program and exits
-  non-zero. When the program ends but the release fails, sdcreds exits with status 70 (or the
-  program's own status when that was already a failure) and says why on stderr.
+  non-zero. When the program ends but the release fails, sdcreds exits with status 70, whatever
+  the program's own status was (it is printed on stderr, with the reason), so that a survivor is never hidden.
 * **Swap must be encrypted.** The credentials are in memory, so `run` refuses to start when
   `sysctl vm.swapencrypt.enable` is 0, or cannot be read; a kernel without the variable is a
   refusal too (sysctl(2) documents the variable, 1 enables and 0 disables, and does not say that

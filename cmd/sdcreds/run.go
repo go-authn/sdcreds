@@ -273,7 +273,7 @@ func runCmd() *cobra.Command {
 			"TZ, TERM, a fixed PATH and CREDENTIALS_DIRECTORY, plus the --pass-env names, and its\n" +
 			"descriptors are 0-2 plus the --pass-fd ones (NOTIFY_SOCKET and LISTEN_FDS need both).\n" +
 			"Exit status: the program's own (128+n for a signal), except 125 sdcreds refused (nothing\n" +
-			"started), 126 sdcreds failed, 70 the release failed. On Linux this is s6-run with the\n" +
+			"started), 126 sdcreds failed, 70 the release failed (whatever the program's own status). On Linux this is s6-run with the\n" +
 			"same flags.",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {

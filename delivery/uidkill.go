@@ -38,10 +38,19 @@ const (
 	// rootKillBudget is how long the release keeps trying: a process that is not
 	// gone by then is one the killer cannot reach, and the caller is told.
 	rootKillBudget = 20 * time.Second
-	// killTotal is the longest KillUID takes: the wait for the other killers (one
-	// at a time), then its own budget, plus the time to reap a killer.
-	killTotal = 2*rootKillBudget + time.Second
+	// killLockWait is how long KillUID waits for another kill of the SAME user to
+	// end (the lock is per user, see killerLockFile): that kill is bounded by
+	// rootKillBudget, so the wait does not outlast it.
+	killLockWait = rootKillBudget
+	// killTotal is the longest KillUID takes: the wait for the lock of its user,
+	// then its own budget, plus the time to reap a killer.
+	killTotal = killLockWait + rootKillBudget + time.Second
 	killPause = 50 * time.Millisecond
+	// unmountWait is how long the helper waits, after the kill, for the unmount.
+	unmountWait = 5 * time.Second
+	// teardownMax is the longest the helper holds the lock of its service after
+	// the release is asked: the kill, then the wait for the unmount.
+	teardownMax = killTotal + unmountWait
 )
 
 // Exit statuses of KillMain.
@@ -149,11 +158,51 @@ func killAllOf(uid int, o procOps) error {
 	}
 }
 
-// killerLockPath is the one lock that serializes the killers of this machine: all
-// killers share a real uid, so two at once would signal each other.
-var killerLockPath = "/var/run/sdcreds-killer.lock"
+// killerLockBase is the prefix of the lock files of the killers: one file per
+// target user (killerLockFile).
+var killerLockBase = "/var/run/sdcreds-killer"
 
-// lockKiller takes the machine-wide killer lock, waiting up to wait. The file is
+// killerLockFile is the lock of the kills of one target user. It is per user, not
+// global: a global lock made a release wait for the kill of ANOTHER user, and give
+// up without killing anything when that one was slow (the wait ended after 20 s
+// while the holder may hold for 21). Two kills of different users now run at
+// once. They share the killer's real uid, so each can signal the other's killer;
+// a killer that dies of it is "run again" by killAllOf, which decides by the
+// process table and never by the killer's status, so no kill is lost, and what is
+// still there at the budget is ErrUIDSurvives (fail closed).
+func killerLockFile(uid int) string { return killerLockBase + "-" + strconv.Itoa(uid) + ".lock" }
+
+// killLocked runs killAllOf for uid under the lock at path, waiting up to wait
+// for it. The only kill that can hold it is another of the same user.
+func killLocked(uid int, path string, wait time.Duration, o procOps) error {
+	lock, err := lockKiller(path, wait)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	return killAllOf(uid, o)
+}
+
+// checkKillerAtStart refuses a start whose release could not kill: the killer
+// user must exist (the caller looked it up) and own no process. A release of
+// another user that is running owns killers for a while, so a process is waited
+// out for up to wait before it is refused.
+func checkKillerAtStart(uid, killer int, wait time.Duration, o procOps) error {
+	// The identity is judged at once: root or the target is never waited out.
+	if err := checkKiller(uid, killer, func(int) ([]proc, error) { return nil, nil }); err != nil {
+		return err
+	}
+	deadline := o.now().Add(wait)
+	for {
+		err := checkKiller(uid, killer, o.list)
+		if err == nil || !errors.Is(err, ErrKiller) || !o.now().Before(deadline) {
+			return err
+		}
+		o.sleep(killPause)
+	}
+}
+
+// lockKiller takes a killer lock, waiting up to wait. The file is
 // opened without following links and must be a plain file of the caller's, so a
 // planted link or file cannot stand in for the lock.
 func lockKiller(path string, wait time.Duration) (*os.File, error) {

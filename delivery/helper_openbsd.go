@@ -261,7 +261,7 @@ func ServeMFS(argv []string, ctl *os.File) error {
 		}
 		select {
 		case <-mountDone:
-		case <-time.After(5 * time.Second):
+		case <-time.After(unmountWait):
 		}
 		return kerr
 	}

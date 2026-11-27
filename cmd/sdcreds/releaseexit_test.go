@@ -19,7 +19,10 @@ func TestReleaseExit(t *testing.T) {
 		{nil, 0, 0, false},
 		{nil, 3, 3, false},
 		{boom, 0, exitReleaseFailed, true},
-		{boom, 3, 3, true},
+		// The program failed AND the release did: the survivor is not hidden.
+		{boom, 3, exitReleaseFailed, true},
+		{boom, 125, exitReleaseFailed, true},
+		{boom, 143, exitReleaseFailed, true},
 	} {
 		var w bytes.Buffer
 		if got := releaseExit(&w, c.err, c.code); got != c.want {

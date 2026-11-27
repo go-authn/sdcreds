@@ -27,7 +27,36 @@ const (
 	testOtherUID   = 32002 // a user that is not a target: its processes must survive
 	testSplitEUID  = 32003 // the effective uid of a process whose real uid is 0
 	forkStormLimit = 3000
+	// A process whose real, effective and saved uids are three different ones.
+	testSplitR = 32201
+	testSplitE = 32202
+	testSplitS = 32203
 )
+
+// The saved-uid offset of struct kinfo_proc is checked against a process that
+// KNOWS its saved uid: one whose three ids differ is listed under each of them,
+// by the real reading of the process table, and each id is read from its own
+// field. A wrong p_svuid offset shows here, which the start check (root: 0/0/0)
+// cannot show.
+func TestSavedUIDOffsetOfKinfoMatchesAProcessWithThreeIDs(t *testing.T) {
+	needRoot(t)
+	pid, _ := startHelper(t, nil, "__split3")
+	for name, uid := range map[string]int{"real": testSplitR, "effective": testSplitE, "saved": testSplitS} {
+		ps, err := listUID(uid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !containsPid(ps, pid) {
+			t.Errorf("the process is not listed under its %s uid %d: %v", name, uid, ps)
+		}
+	}
+	_, err := listKernWith(kernProcAll, 0, func(buf []byte) ([]proc, error) {
+		return nil, checkOwnIDs(buf, pid, testSplitR, testSplitE, testSplitS)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
 
 // killerHelperMain is the body of the helper processes of these tests.
 func killerHelperMain(mode string, args []string) {
@@ -56,6 +85,14 @@ func killerHelperMain(mode string, args []string) {
 	case "__split0":
 		// Real uid 0, effective uid of somebody: root's own process, not a target.
 		if err := unix.Setresuid(0, testSplitEUID, 0); err != nil {
+			fmt.Println("error", err)
+			os.Exit(1)
+		}
+		fmt.Println("ready")
+		time.Sleep(300 * time.Second)
+	case "__split3":
+		// Three different ids: real, effective and saved all differ.
+		if err := unix.Setresuid(testSplitR, testSplitE, testSplitS); err != nil {
 			fmt.Println("error", err)
 			os.Exit(1)
 		}
@@ -137,7 +174,7 @@ func TestTheKillerCannotBeSignalledByTheTarget(t *testing.T) {
 // another user, and a process of real uid 0 with another effective uid are all
 // still there, and the killer refuses to take root or the target as its own uid.
 func TestReleaseKillsNothingButTheTarget(t *testing.T) {
-	needRoot(t)
+	base := needRoot(t)
 	split, _ := startHelper(t, nil, "__split0")
 	plain, _ := startHelper(t, nil, "__canary")
 	other, _ := startHelper(t, asUser(testOtherUID), "__canary")
@@ -160,10 +197,16 @@ func TestReleaseKillsNothingButTheTarget(t *testing.T) {
 			t.Errorf("killer %s: %v", name, err)
 		}
 	}
-	// A killer user that owns a process is refused too.
+	// A killer user that owns a process, or that does not exist, is refused at the
+	// START: the release could not be trusted, so nothing is delivered.
+	cfg := testConfig(t, base, "svc", Credential{"a", []byte("x")})
 	lookupKiller = func() (int, int, error) { return testOtherUID, testOtherUID, nil }
-	if err := KillUID(testExe(), testUID, testGID, nil); !errors.Is(err, ErrKiller) {
-		t.Errorf("killer that owns a process: %v", err)
+	if _, err := Prepare(context.Background(), cfg); !errors.Is(err, ErrKiller) {
+		t.Errorf("start with a killer that owns a process: %v", err)
+	}
+	lookupKiller = func() (int, int, error) { return 0, 0, fmt.Errorf("%w: user absent", ErrKiller) }
+	if _, err := Prepare(context.Background(), cfg); !errors.Is(err, ErrKiller) {
+		t.Errorf("start with a killer user that was deleted: %v", err)
 	}
 }
 
