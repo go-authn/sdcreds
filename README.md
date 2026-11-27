@@ -243,16 +243,21 @@ end. What to know:
   an absolute, normalised path that the user can execute.
 * **Killing sdcreds kills the program** and unmounts, even with SIGKILL. A helper process
   holds the service lock and watches sdcreds; on any end it kills everything the service user
-  runs (by uid, so a program that called setsid does not escape) and then unmounts. The kill is
-  decided by root, not by a process running as the service user: the helper reads the kernel
-  process table for the REAL, EFFECTIVE or SAVED uid (the same set the start check counts), stops
-  every process it finds (a stopped process
-  cannot fork or signal), reads the table again until it no longer changes, then sends SIGKILL, and
-  repeats until the user has no process. A set-uid program of that user, run by someone else, is
-  therefore killed too (before v0.4.0 it was counted as "busy" but survived the release, and refused every later start). A pid that was stopped and then no longer names the same process
-  (same pid and start time) is resumed, never killed. The helper's first move, a `kill(-1)` from
-  a process running as the user, is best effort and is not limited to the real uid. A program that signals everything of its user in a loop
-  therefore does not stop it. When a process survives the budget (20 s), the helper still unmounts
+  runs (by uid, so a program that called setsid does not escape) and then unmounts. Root never
+  signals a pid it read from a list. Since v0.4.0 the kill is made by a short-lived killer
+  process that root starts and that drops to split credentials (real and saved uid of a reserved
+  killer user, effective uid of the service user) before it signals anything: the kernel then
+  lets it signal every process of the service user, while no process of that user can signal it.
+  The killer sends `kill(-1, SIGKILL)` until the kernel reports nothing left, and root only reads
+  the process table to see whether it must run again. Killers are serialised by a lock
+  (`/var/run/sdcreds-killer.lock`).
+  **Install requirement:** create the killer user, which must own no process and must not be root
+  or a service user: `useradd -s /sbin/nologin -d /var/empty -c "sdcreds killer" _sdkill`. A
+  delivery is refused to start without it. A program that signals everything of its user in a
+  loop does not stop the release. A process that holds the user only through a set-uid file run
+  by another user is counted by the start check but is not reached by the killer: the release
+  then reports that a process survived and the next start is refused until it is gone (this is
+  fail-closed). When a process survives the budget (20 s), the helper still unmounts
   (the secrets go), reports the failure and exits non-zero; Release never reports success while
   processes of the user remain. A zombie (p_stat or PS_ZOMBIE) is not counted, so an unreaped
   one does not make the user busy. Because the kill is by uid, a user is

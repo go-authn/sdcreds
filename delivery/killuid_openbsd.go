@@ -6,26 +6,18 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"syscall"
+	"os/user"
+	"strconv"
 	"time"
 
 	"golang.org/x/sys/unix"
 )
 
-// KillCommand is the hidden command of the program that embeds this package:
-// run as the TARGET user, it signals every process that user can signal. It is
-// only the fast, race-free first move of KillUID: a process of the target can
-// signal it, so root (KillUID's second move) is what decides.
+// KillCommand is the hidden command of the program that embeds this package: the
+// killer. It is started by root with no credential change, so no process of the
+// target can signal it while it is still root, and it then takes split
+// credentials (see KillMain) before it signals anything.
 const KillCommand = "__sdcreds-killuid"
-
-// Exit statuses of KillMain.
-const (
-	killExitSurvives = 4 // some are still there after the time allowed
-	killExitUsage    = 64
-)
-
-// killBudget is how long one KillMain keeps signalling.
-const killBudget = time.Second
 
 // ErrUIDBusy is a target user that already has processes: the delivery refuses
 // to start, because it will kill every process of that user when it ends.
@@ -34,14 +26,50 @@ var ErrUIDBusy = errors.New("delivery: the target user already has processes (a 
 // ErrUIDSurvives is a target user some of whose processes survived SIGKILL.
 var ErrUIDSurvives = errors.New("delivery: processes of the target user survived SIGKILL")
 
-// KillMain is the body of KillCommand; args is "kill". It returns the exit
-// status. It refuses to run with uid or euid 0: kill(-1) as root is every
-// process of the machine.
+// becomeKiller turns the calling process (root) into the killer: a session of its
+// own, no supplementary group, the killer's group, and the split credentials
+// real uid = saved uid = killer, effective uid = target, in ONE setresuid. By the
+// kernel's cansignal() it then reaches every process whose real or saved uid is
+// the target (or the killer), and a process of the target, whose uid is not the
+// killer's, cannot signal it. The result is read back before it is trusted.
+func becomeKiller(uid, killer, gid int) error {
+	if _, err := unix.Setsid(); err != nil && !errors.Is(err, unix.EPERM) {
+		return err // EPERM: already a session leader, which is as good
+	}
+	if err := unix.Setgroups(nil); err != nil {
+		return err
+	}
+	if err := unix.Setresgid(gid, gid, gid); err != nil {
+		return err
+	}
+	if err := unix.Setresuid(killer, uid, killer); err != nil {
+		return err
+	}
+	r, e, s := unix.Getresuid()
+	if r != killer || e != uid || s != killer {
+		return fmt.Errorf("delivery: the killer has uids %d/%d/%d, want %d/%d/%d", r, e, s, killer, uid, killer)
+	}
+	return nil
+}
+
+// KillMain is the body of KillCommand; args is "kill UID KILLERUID KILLERGID". It
+// returns the exit status. It must start as root (it installs the credentials)
+// and refuses a killer uid of 0 or of the target: with the real uid 0, kill(-1)
+// would reach every root process, and with the target's it is the killer a
+// target can stop.
+//
+// It signals nothing but kill(-1, SIGKILL): the kernel walks its own process
+// table, so no pid crosses user space and none can be reused. It loops until the
+// kernel answers ESRCH (nothing left that it may signal), within rootKillBudget.
 func KillMain(args []string) int {
-	if len(args) != 1 || args[0] != "kill" || os.Getuid() == 0 || os.Geteuid() == 0 {
+	uid, killer, gid, err := parseKillArgs(args)
+	if err != nil || os.Getuid() != 0 || os.Geteuid() != 0 {
 		return killExitUsage
 	}
-	deadline := time.Now().Add(killBudget)
+	if err := becomeKiller(uid, killer, gid); err != nil {
+		return killExitCreds
+	}
+	deadline := time.Now().Add(rootKillBudget)
 	for {
 		err := unix.Kill(-1, unix.SIGKILL)
 		if errors.Is(err, unix.ESRCH) {
@@ -54,18 +82,15 @@ func KillMain(args []string) int {
 	}
 }
 
-// runKiller runs `exe KillCommand kill` as the target user and returns its exit
-// status.
-func runKiller(exe string, uid, gid int, groups []int) (int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), killBudget+time.Second)
+// runKiller runs `exe KillCommand kill UID KILLERUID KILLERGID` as root, for at
+// most wait, and returns its exit status. On the timeout the context kills the
+// child: root's own unreaped child, whose pid cannot have been reused.
+func runKiller(exe string, uid, killer, gid int, wait time.Duration) (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), wait+time.Second)
 	defer cancel()
-	gs := make([]uint32, len(groups))
-	for i, g := range groups {
-		gs[i] = uint32(g)
-	}
-	cmd := exec.CommandContext(ctx, exe, KillCommand, "kill")
+	cmd := exec.CommandContext(ctx, exe, KillCommand, "kill", strconv.Itoa(uid), strconv.Itoa(killer), strconv.Itoa(gid))
 	cmd.Env = []string{}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: gs}}
+	cmd.WaitDelay = time.Second
 	err := cmd.Run()
 	var ee *exec.ExitError
 	switch {
@@ -158,11 +183,11 @@ func checkProcLayout() error {
 	return nil
 }
 
+// realProcs reads the process table; it has no way to signal.
 var realProcs = procOps{
-	list:   listUID,
-	signal: func(pid int, sig syscall.Signal) error { return unix.Kill(pid, sig) },
-	sleep:  time.Sleep,
-	now:    time.Now,
+	list:  listUID,
+	sleep: time.Sleep,
+	now:   time.Now,
 }
 
 // UIDBusy reports whether the user has any process, read by root from the
@@ -173,16 +198,57 @@ func UIDBusy(uid int) (bool, error) { return busyOf(uid, realProcs) }
 // caller makes it just before it lets the program run.
 func VerifyOnlyProcess(uid, pid int) error { return onlyProcess(uid, pid, realProcs) }
 
-// KillUID makes every process of the user go. The caller is root. First, one
-// killer that has dropped to the target user sends SIGKILL to the user's
-// processes without a pid race; a process of the target may kill it, so the
-// outcome is not taken from it. Then root stops, re-reads and kills by the
-// process table until the user has no process, and returns ErrUIDSurvives if
-// some are left after the budget.
+// lookupKiller finds the killer user's uid and gid (a seam for the tests).
+var lookupKiller = func() (uid, gid int, err error) {
+	u, err := user.Lookup(KillerUser)
+	if err != nil {
+		return 0, 0, fmt.Errorf("%w: user %q: %v (create it: useradd -s /sbin/nologin -d /var/empty -c \"sdcreds killer\" %s)", ErrKiller, KillerUser, err, KillerUser)
+	}
+	uid, err1 := strconv.Atoi(u.Uid)
+	gid, err2 := strconv.Atoi(u.Gid)
+	if err1 != nil || err2 != nil {
+		return 0, 0, fmt.Errorf("%w: user %q has uid %q and gid %q", ErrKiller, KillerUser, u.Uid, u.Gid)
+	}
+	return uid, gid, nil
+}
+
+// killerIDs is the killer identity for a delivery to uid, refused unless it can
+// be used. The "owns no process" check is made at the release, under the lock,
+// because the killer of a release that is running owns one.
+func killerIDs(uid int) (killer, gid int, err error) {
+	killer, gid, err = lookupKiller()
+	if err != nil {
+		return 0, 0, err
+	}
+	if _, _, _, err := parseKillArgs([]string{"kill", strconv.Itoa(uid), strconv.Itoa(killer), strconv.Itoa(gid)}); err != nil {
+		return 0, 0, fmt.Errorf("%w: %w", ErrKiller, err)
+	}
+	return killer, gid, nil
+}
+
+// KillUID makes every process of the user go. The caller is root. One at a time
+// on the machine (the killers share a real uid, so two would signal each other),
+// a killer with split credentials sends SIGKILL by kill(-1) until the kernel has
+// nothing left it may signal; root only reads the process table, to run it again
+// or to report ErrUIDSurvives after the budget. gid and groups are the target's
+// and no longer used: the killer takes the group of the killer user.
 func KillUID(exe string, uid, gid int, groups []int) error {
 	if err := ValidID(int64(uid), "uid"); err != nil {
 		return err
 	}
-	_ = giveUpAfter(killBudget+time.Second, func() { _, _ = runKiller(exe, uid, gid, groups) })
-	return killAllOf(uid, realProcs)
+	killer, kgid, err := killerIDs(uid)
+	if err != nil {
+		return err
+	}
+	lock, err := lockKiller(killerLockPath, rootKillBudget)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := checkKiller(uid, killer, realProcs.list); err != nil {
+		return err
+	}
+	o := realProcs
+	o.kill = func(wait time.Duration) (int, error) { return runKiller(exe, uid, killer, kgid, wait) }
+	return killAllOf(uid, o)
 }

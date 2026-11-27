@@ -71,6 +71,10 @@ func prepare(ctx context.Context, c Config) (d *Delivery, err error) {
 	// The delivery kills every process of the target user when it ends: it must
 	// own the user. One that has processes already is refused, before anything
 	// is decrypted.
+	// The release needs the killer user: without it nothing could be killed.
+	if _, _, err := killerIDs(c.UID); err != nil {
+		return nil, err
+	}
 	if busy, err := UIDBusy(c.UID); err != nil {
 		return nil, err
 	} else if busy {
@@ -315,7 +319,7 @@ func (d *Delivery) release() error {
 		_, _ = s.ctl.Write([]byte(Ctl{Kind: CtlRelease}.String() + "\n"))
 		// Earlier messages (a "ready" nobody read, for one) come before the answer.
 		// The helper kills the target's processes before it answers.
-		t := time.NewTimer(releaseTimeout + killBudget + time.Second + rootKillBudget)
+		t := time.NewTimer(releaseTimeout + killTotal)
 		answered := false
 	wait:
 		for {

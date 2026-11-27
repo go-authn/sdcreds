@@ -51,8 +51,13 @@ func TestMain(m *testing.M) {
 		case "__sleeper":
 			time.Sleep(300 * time.Second)
 			os.Exit(0)
+		case "__killerhold", "__probe", "__split0", "__canary", "__forkstorm":
+			killerHelperMain(os.Args[1], os.Args[2:])
 		}
 	}
+	// The killer user of the VM tests: a uid that owns no process and has no
+	// entry in the password file.
+	lookupKiller = func() (int, int, error) { return testKillerUID, testKillerUID, nil }
 	if os.Geteuid() == 0 && os.Getenv(exeEnv) == "" {
 		// A directory the target can search, holding a copy of this binary.
 		dir, err := os.MkdirTemp("/var/run", "sdctestbin")
@@ -425,11 +430,19 @@ func TestPrepareRefusesAUserThatHasProcesses(t *testing.T) {
 	}
 }
 
-// The killer refuses to run as root: kill(-1) there is every process.
-func TestKillMainRefusesRoot(t *testing.T) {
+// The killer refuses a real uid of root (kill(-1) there is every root process),
+// the target as its own killer, and the old argument form.
+func TestKillMainRefusesWrongIDs(t *testing.T) {
 	needRoot(t)
-	if got := KillMain([]string{"kill"}); got != killExitUsage {
-		t.Fatalf("KillMain as root returned %d", got)
+	for name, args := range map[string][]string{
+		"old form":       {"kill"},
+		"killer is root": {"kill", "32001", "0", "32100"},
+		"killer=target":  {"kill", "32001", "32001", "32100"},
+		"target is root": {"kill", "0", "32100", "32100"},
+	} {
+		if got := KillMain(args); got != killExitUsage {
+			t.Errorf("%s: KillMain returned %d", name, got)
+		}
 	}
 }
 

@@ -6,140 +6,182 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"slices"
-	"syscall"
+	"strconv"
 	"time"
 
 	"golang.org/x/sys/unix"
 )
 
-// giveUpAfter runs f and returns true when it came back within d. When it did
-// not, f is left running in its goroutine: the caller goes on without it. The
-// first-move killer is started this way, because a hostile process of the target
-// can SIGSTOP the killer between its setuid and its exec, and the parent's fork
-// then blocks until root has killed that user's processes, which is what the
-// caller does next.
-func giveUpAfter(d time.Duration, f func()) bool {
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		f()
-	}()
-	select {
-	case <-done:
-		return true
-	case <-time.After(d):
-		return false
-	}
-}
+// The release kill never signals a pid read from a list. A pid taken from the
+// process table can be given to another process between the reading and the
+// signal (a zombie reaped by init, a pid reused), and root would then kill a
+// stranger. The kernel walks its own table instead: kill(-1, SIGKILL) reaches
+// every process the sender may signal, and nothing else. The sender is a
+// "killer" with split credentials (see KillMain): it can signal every process of
+// the target user, and no process of the target can signal it.
 
-// procOps is what the root-side kill needs from the system; the tests give it a
+// procOps is what the release kill needs from the system; the tests give it a
 // scripted process table.
 type procOps struct {
 	// list returns the live processes whose real, effective or saved uid is uid:
-	// what makes a start refuse AND what the kill goes by, so that a process that
-	// holds the user's rights by any of the three cannot outlive the release and
-	// block the next start.
-	list   func(uid int) ([]proc, error)
-	signal func(pid int, sig syscall.Signal) error
-	sleep  func(time.Duration)
-	now    func() time.Time
+	// what makes a start refuse AND what the release is judged by, so that a
+	// process that holds the user's rights by any of the three cannot outlive
+	// the release unseen and block the next start. It is only ever read.
+	list func(uid int) ([]proc, error)
+	// kill runs one killer for at most wait and returns its exit status.
+	kill  func(wait time.Duration) (int, error)
+	sleep func(time.Duration)
+	now   func() time.Time
 }
 
 const (
-	// rootKillBudget is how long root keeps trying: a process that is not gone by
-	// then is in a state SIGKILL does not reach, and the caller is told.
+	// rootKillBudget is how long the release keeps trying: a process that is not
+	// gone by then is one the killer cannot reach, and the caller is told.
 	rootKillBudget = 20 * time.Second
-	// stopPasses bounds the freeze: processes that are stopped cannot fork, so the
-	// list settles; a table that never does is killed as it stands.
-	stopPasses = 16
-	killPause  = 5 * time.Millisecond
+	// killTotal is the longest KillUID takes: the wait for the other killers (one
+	// at a time), then its own budget, plus the time to reap a killer.
+	killTotal = 2*rootKillBudget + time.Second
+	killPause = 50 * time.Millisecond
 )
 
-// killAllOf makes every process of uid go, signalled by the caller itself (root):
-// a process of the target cannot signal root, so none of them can stop this. It
-// stops everything it finds, reads the table again until a pass finds nothing
-// new (a stopped process cannot fork or kill), then sends SIGKILL, and goes on
-// until the table is empty. It returns ErrUIDSurvives if time runs out first.
+// Exit statuses of KillMain.
+const (
+	killExitSurvives = 4  // kill(-1) still found something after the time allowed
+	killExitUsage    = 64 // wrong arguments, or not started as root
+	killExitCreds    = 65 // the split credentials could not be installed
+)
+
+// ErrKiller is a killer identity that cannot be used: the kill refuses to run
+// rather than run with the wrong credentials.
+var ErrKiller = errors.New("delivery: the killer user cannot be used")
+
+// KillerUser is the dedicated system user whose uid is the real and saved uid of
+// the killer. It must exist, must not be root, must not be a target, and must own
+// no process (so that kill(-1) from a process of the target cannot reach it, and
+// the killer does not reach root). It is an install requirement of the OpenBSD
+// delivery: create it once, for example
+//
+//	useradd -s /sbin/nologin -d /var/empty -c "sdcreds killer" _sdkill
+var KillerUser = "_sdkill"
+
+// parseKillArgs reads the arguments of KillCommand: "kill UID KILLERUID KILLERGID".
+// A uid of 0, a killer that is the target and ids that are not plain numbers are
+// refused: kill(-1) with the real uid 0 is every process of the machine, and with
+// the real uid of the target it is the weaker killer a target can stop.
+func parseKillArgs(args []string) (uid, killer, gid int, err error) {
+	if len(args) != 4 || args[0] != "kill" {
+		return 0, 0, 0, errors.New("usage: kill UID KILLERUID KILLERGID")
+	}
+	ids := make([]int, 3)
+	for i, s := range args[1:] {
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			return 0, 0, 0, fmt.Errorf("%q is not an id", s)
+		}
+		if err := ValidID(n, "id"); err != nil {
+			return 0, 0, 0, err
+		}
+		ids[i] = int(n)
+	}
+	if ids[1] == ids[0] {
+		return 0, 0, 0, errors.New("the killer uid is the target uid")
+	}
+	return ids[0], ids[1], ids[2], nil
+}
+
+// checkKiller refuses a killer identity that would make the kill unsafe or
+// useless: root (ValidID), the target itself, or a user that owns a process,
+// which the target's processes could then signal or which would be signalled.
+func checkKiller(uid, killer int, list func(uid int) ([]proc, error)) error {
+	if err := ValidID(int64(killer), "killer uid"); err != nil {
+		return fmt.Errorf("%w: %w", ErrKiller, err)
+	}
+	if killer == uid {
+		return fmt.Errorf("%w: uid %d is the target", ErrKiller, killer)
+	}
+	ps, err := list(killer)
+	if err != nil {
+		return fmt.Errorf("delivery: listing the processes of the killer uid %d: %w", killer, err)
+	}
+	if len(ps) > 0 {
+		return fmt.Errorf("%w: uid %d owns process %d (it must own none)", ErrKiller, killer, ps[0].pid)
+	}
+	return nil
+}
+
+// killAllOf makes every process of uid go. Each pass is one killer that signals
+// by kill(-1); the process table is only read, by root, to decide whether another
+// pass is needed. A killer that died, was refused or found nothing it can reach is
+// "run again": the table decides, and what is still there at the budget is
+// ErrUIDSurvives (fail closed).
 func killAllOf(uid int, o procOps) error {
 	if err := ValidID(int64(uid), "uid"); err != nil {
 		return err
 	}
 	deadline := o.now().Add(rootKillBudget)
-	var sigErr error
-	send := func(ps []proc, sig syscall.Signal) {
-		for _, pr := range ps {
-			// pid 0 and 1 are never signalled whatever the table says; ESRCH is the
-			// process having already gone.
-			if pr.pid <= 1 || pr.pid == os.Getpid() {
-				continue
-			}
-			if err := o.signal(pr.pid, sig); err != nil && !errors.Is(err, unix.ESRCH) {
-				sigErr = err
-			}
-		}
-	}
+	var lastErr error
 	for {
-		pids, err := o.list(uid)
+		ps, err := o.list(uid)
 		if err != nil {
 			return fmt.Errorf("delivery: listing the processes of uid %d: %w", uid, err)
 		}
-		if len(pids) == 0 {
+		if len(ps) == 0 {
 			return nil
 		}
-		for pass := 0; pass < stopPasses; pass++ {
-			send(pids, unix.SIGSTOP)
-			again, err := o.list(uid)
-			if err != nil {
-				return fmt.Errorf("delivery: listing the processes of uid %d: %w", uid, err)
-			}
-			// A pid that was stopped and is not the same process of the user any
-			// more (it exited and the pid was given to another process between the
-			// list and the stop) is resumed: root must not leave a stranger stopped.
-			var strangers []proc
-			for _, p := range pids {
-				if !containsProc(again, p) {
-					strangers = append(strangers, p)
-				}
-			}
-			send(strangers, unix.SIGCONT)
-			settled := sameSet(pids, again)
-			pids = again
-			if settled {
-				break
-			}
-		}
-		send(pids, unix.SIGKILL)
-		if !o.now().Before(deadline) {
+		left := deadline.Sub(o.now())
+		if left <= 0 {
 			err := fmt.Errorf("%w (uid %d)", ErrUIDSurvives, uid)
-			if sigErr != nil {
-				err = errors.Join(err, sigErr)
+			if lastErr != nil {
+				err = errors.Join(err, lastErr)
 			}
 			return err
+		}
+		code, kerr := o.kill(left)
+		switch {
+		case code == killExitUsage || code == killExitCreds:
+			// The killer was refused or could not take its credentials: another
+			// pass would be the same.
+			return fmt.Errorf("%w: the killer exited %d (uid %d)", ErrKiller, code, uid)
+		case kerr != nil:
+			lastErr = kerr
 		}
 		o.sleep(killPause)
 	}
 }
 
-func containsProc(s []proc, p proc) bool { return slices.Contains(s, p) }
+// killerLockPath is the one lock that serializes the killers of this machine: all
+// killers share a real uid, so two at once would signal each other.
+var killerLockPath = "/var/run/sdcreds-killer.lock"
 
-func sameSet(a, b []proc) bool {
-	a, b = slices.Clone(a), slices.Clone(b)
-	less := func(x, y proc) int {
-		if x.pid != y.pid {
-			return x.pid - y.pid
-		}
-		switch {
-		case x.start < y.start:
-			return -1
-		case x.start > y.start:
-			return 1
-		}
-		return 0
+// lockKiller takes the machine-wide killer lock, waiting up to wait. The file is
+// opened without following links and must be a plain file of the caller's, so a
+// planted link or file cannot stand in for the lock.
+func lockKiller(path string, wait time.Duration) (*os.File, error) {
+	fd, err := unix.Open(path, unix.O_RDWR|unix.O_CREAT|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("delivery: the killer lock %s: %w", path, err)
 	}
-	slices.SortFunc(a, less)
-	slices.SortFunc(b, less)
-	return slices.Equal(a, b)
+	f := os.NewFile(uintptr(fd), path)
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil || st.Mode&unix.S_IFMT != unix.S_IFREG || int(st.Uid) != os.Geteuid() || st.Mode&0o077 != 0 {
+		f.Close()
+		return nil, fmt.Errorf("delivery: the killer lock %s is not a private file of this user", path)
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB)
+		if err == nil {
+			return f, nil
+		}
+		if !errors.Is(err, unix.EWOULDBLOCK) || !time.Now().Before(deadline) {
+			f.Close()
+			if errors.Is(err, unix.EWOULDBLOCK) {
+				return nil, fmt.Errorf("%w: another release holds the killer lock", ErrBusy)
+			}
+			return nil, fmt.Errorf("delivery: the killer lock %s: %w", path, err)
+		}
+		time.Sleep(lockPoll)
+	}
 }
 
 // onlyProcess reports ErrUIDBusy unless pid is the one process of uid, and is
