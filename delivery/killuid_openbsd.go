@@ -1,7 +1,6 @@
 package delivery
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +10,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/go-authn/sdcreds/internal/exitguard"
 )
 
 // KillCommand is the hidden command of the program that embeds this package: the
@@ -83,15 +84,14 @@ func KillMain(args []string) int {
 }
 
 // runKiller runs `exe KillCommand kill UID KILLERUID KILLERGID` as root, for at
-// most wait, and returns its exit status. On the timeout the context kills the
-// child: root's own unreaped child, whose pid cannot have been reused.
+// most wait, and returns its exit status. On the timeout the child, root's own,
+// is killed through exitguard.Run, never after it has been reaped: the pid may be
+// somebody else's by then, and exec.CommandContext's kill can arrive in that
+// window on OpenBSD (see exitguard).
 func runKiller(exe string, uid, killer, gid int, wait time.Duration) (int, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), wait+time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, exe, KillCommand, "kill", strconv.Itoa(uid), strconv.Itoa(killer), strconv.Itoa(gid))
+	cmd := exec.Command(exe, KillCommand, "kill", strconv.Itoa(uid), strconv.Itoa(killer), strconv.Itoa(gid))
 	cmd.Env = []string{}
-	cmd.WaitDelay = time.Second
-	err := cmd.Run()
+	err := exitguard.Run(cmd, wait+time.Second)
 	var ee *exec.ExitError
 	switch {
 	case err == nil:
