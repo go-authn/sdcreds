@@ -276,6 +276,10 @@ func TestParseKillArgs(t *testing.T) {
 	if _, _, _, err := parseKillArgs([]string{"kill", "32001", "32100"}); err == nil {
 		t.Error("too few: accepted")
 	}
+	// A word and a number out of range are told apart from the ids that are refused.
+	if _, _, _, err := parseKillArgs([]string{"kill", "32001", "x", "32101"}); err == nil || !strings.Contains(err.Error(), "not an id") {
+		t.Errorf("a word: %v, want %q", err, "not an id")
+	}
 }
 
 func TestCheckKiller(t *testing.T) {
@@ -349,8 +353,8 @@ func TestLockKiller(t *testing.T) {
 	if _, err := lockKiller(link, 0); err == nil {
 		t.Fatal("a symbolic link accepted")
 	}
-	if _, err := lockKiller(filepath.Join(dir, "absent", "x"), 0); err == nil {
-		t.Fatal("a missing directory accepted")
+	if _, err := lockKiller(filepath.Join(dir, "absent", "x"), 0); !errors.Is(err, unix.ENOENT) {
+		t.Fatalf("a missing directory: %v, want the open error itself", err)
 	}
 }
 
