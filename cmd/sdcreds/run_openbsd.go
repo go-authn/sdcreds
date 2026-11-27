@@ -230,12 +230,23 @@ func runStub(cmd *cobra.Command, p *runPlan, d *delivery.Delivery, self, limits 
 		return 0, err
 	}
 	gr.Close()
+	// The exit of the stub is observed without reaping it, the guard is marked, and
+	// only then is it reaped (see stubGuard): a signal is never sent by a pid that
+	// may already belong to another process.
+	var guard stubGuard
+	exited, werr := watchExit(c.Process.Pid)
+	if werr != nil {
+		_ = c.Process.Kill()
+		_ = d.KillTarget()
+		_ = c.Wait()
+		return 0, fmt.Errorf("sdcreds run: cannot watch the program: %w", werr)
+	}
 	done := make(chan error, 1)
-	go func() { done <- c.Wait() }()
+	go func() { done <- reapAfterExit(exited, &guard, c.Wait) }()
 	// The stub is this process's own child: it is killed directly first (no pid
 	// race, no help needed from the helper), then the user's other processes.
 	killAll := func() error {
-		_ = c.Process.Kill()
+		guard.signal(func(os.Signal) error { return c.Process.Kill() }, nil)
 		return d.KillTarget()
 	}
 	if err := d.GuardGroup(c.Process.Pid); err != nil {
@@ -260,7 +271,7 @@ func runStub(cmd *cobra.Command, p *runPlan, d *delivery.Delivery, self, limits 
 	for {
 		select {
 		case s := <-sigs:
-			_ = c.Process.Signal(s)
+			guard.signal(c.Process.Signal, s)
 		case <-lost:
 			// The helper is gone: nothing guards the mount or the program any
 			// more. Kill every process of the target and fail.
