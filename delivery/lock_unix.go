@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -36,6 +37,46 @@ func AcquireUIDLock(base string, uid int) (*Lock, error) {
 		return nil, err
 	}
 	return lockFile(UIDLockPath(base, uid))
+}
+
+// TeardownWait is how long a start waits for the lock of its own service to be
+// free: the helper of a run that just ended holds it until it has killed the
+// user's processes and unmounted, which takes up to 20 s (root kill budget) plus
+// 1 s plus 5 s, so 30 s covers it. A lock that is still held after that is a run
+// that is alive, and the start is refused (ErrBusy).
+const TeardownWait = 30 * time.Second
+
+// UIDLockGrace is how long a start waits for the lock of the user once it holds
+// the lock of its service: the helper of the previous run of the same service
+// drops both together, so only the instant between the two closes is covered.
+// A user held by ANOTHER service stays refused: it is a user decision that a
+// user belongs to one service.
+const UIDLockGrace = 500 * time.Millisecond
+
+// lockPoll is the pause between two attempts of a wait.
+const lockPoll = 50 * time.Millisecond
+
+// waitFor retries try while it reports ErrBusy, for at most wait.
+func waitFor(wait time.Duration, try func() (*Lock, error)) (*Lock, error) {
+	deadline := time.Now().Add(wait)
+	for {
+		l, err := try()
+		if err == nil || !errors.Is(err, ErrBusy) || !time.Now().Before(deadline) {
+			return l, err
+		}
+		time.Sleep(lockPoll)
+	}
+}
+
+// AcquireLockWait is AcquireLock that waits up to wait for a lock held by a
+// teardown in progress; it returns ErrBusy when the lock is still held then.
+func AcquireLockWait(base, service string, wait time.Duration) (*Lock, error) {
+	return waitFor(wait, func() (*Lock, error) { return AcquireLock(base, service) })
+}
+
+// AcquireUIDLockWait is AcquireUIDLock that waits up to wait.
+func AcquireUIDLockWait(base string, uid int, wait time.Duration) (*Lock, error) {
+	return waitFor(wait, func() (*Lock, error) { return AcquireUIDLock(base, uid) })
 }
 
 func lockFile(p string) (*Lock, error) {

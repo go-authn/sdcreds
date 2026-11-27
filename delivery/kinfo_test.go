@@ -58,6 +58,28 @@ func TestParseKinfoZombiesAndStart(t *testing.T) {
 	}
 }
 
+// F5: a process that holds the uid by its saved id only is found by the
+// KERN_PROC_ALL reading; the kernel has no selector for it.
+func TestParseKinfoAllFindsEveryHolderOfTheUID(t *testing.T) {
+	svOnly := elem(12, 7, 8)
+	binary.NativeEndian.PutUint32(svOnly[kinfoSvUIDOff:], 5000)
+	zomb := elem(14, 5000, 5000)
+	zomb[kinfoStatOff] = byte(sZomb)
+	buf := append(append(append(append(append(elem(10, 5000, 6000), elem(11, 6000, 5000)...), svOnly...), elem(13, 7, 8)...), zomb...), elem(0, 0, 0)...)
+	got, err := parseKinfoAll(buf, 5000)
+	if err != nil || len(got) != 3 || got[0].pid != 10 || got[1].pid != 11 || got[2].pid != 12 {
+		t.Fatalf("%v %v", got, err)
+	}
+	if kinfoSvUIDOff != 568 {
+		t.Fatalf("p_svuid offset %d", kinfoSvUIDOff)
+	}
+	for name, buf := range map[string][]byte{"not whole": append(elem(10, 5000, 5000), 0), "negative pid": elem(-4, 5000, 5000)} {
+		if got, err := parseKinfoAll(buf, 5000); err == nil || got != nil {
+			t.Errorf("%s: %v %v", name, got, err)
+		}
+	}
+}
+
 func TestParseKinfoRefusesAWrongLayout(t *testing.T) {
 	for name, c := range map[string]struct {
 		buf     []byte

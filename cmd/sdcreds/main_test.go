@@ -571,6 +571,15 @@ func TestMainExitCode(t *testing.T) {
 	}
 }
 
+// F7: sdcreds' own endings have reserved statuses, apart from the usual daemon
+// ones (0-2, sysexits 64-78) and from 128+signal; the values are documented in
+// the README, so a change is a breaking one.
+func TestOwnExitStatusesAreReserved(t *testing.T) {
+	if exitRefused != 125 || exitFailed != 126 || exitReleaseFailed != 70 {
+		t.Fatalf("refused %d failed %d release %d", exitRefused, exitFailed, exitReleaseFailed)
+	}
+}
+
 // A null-key credential is refused by decrypt on every machine unless
 // --allow-null is given; no probe of the system admits it.
 func TestDecryptRefusesNullByDefault(t *testing.T) {

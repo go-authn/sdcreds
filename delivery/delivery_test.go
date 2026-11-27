@@ -10,7 +10,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/go-authn/sdcreds"
 	"golang.org/x/sys/unix"
@@ -577,6 +579,102 @@ func TestAcquireLock(t *testing.T) {
 	}
 	if _, err := AcquireLock(filepath.Join(root, "missing"), "svc"); err == nil {
 		t.Fatal("lock in a missing directory")
+	}
+}
+
+// F6: a start waits, bounded, for the lock of a teardown in progress on the same
+// service, and still refuses a lock that stays held.
+func TestAcquireLockWaitsForATeardown(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("owner checks need an unprivileged user")
+	}
+	root := fakeTrust(t)
+	held, err := AcquireLock(root, "svc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A wait that never returns would stop the suite: every call is cut short.
+	bounded := func(f func() (*Lock, error)) (*Lock, error) {
+		type r struct {
+			l   *Lock
+			err error
+		}
+		ch := make(chan r, 1)
+		go func() { l, err := f(); ch <- r{l, err} }()
+		select {
+		case x := <-ch:
+			return x.l, x.err
+		case <-time.After(10 * time.Second):
+			t.Fatal("a wait did not end at its bound")
+			return nil, nil
+		}
+	}
+	// No wait: the old behaviour, refused at once.
+	if _, err := bounded(func() (*Lock, error) { return AcquireLockWait(root, "svc", 0) }); !errors.Is(err, ErrBusy) {
+		t.Fatalf("no wait: %v", err)
+	}
+	// Held past the bound: refused, after waiting about the bound.
+	t0 := time.Now()
+	if _, err := bounded(func() (*Lock, error) { return AcquireLockWait(root, "svc", 300*time.Millisecond) }); !errors.Is(err, ErrBusy) || time.Since(t0) < 250*time.Millisecond {
+		t.Fatalf("held past the bound: %v after %v", err, time.Since(t0))
+	}
+	// Released during the wait: acquired.
+	go func() { time.Sleep(200 * time.Millisecond); held.Close() }()
+	l, err := bounded(func() (*Lock, error) { return AcquireLockWait(root, "svc", 5*time.Second) })
+	if err != nil {
+		t.Fatalf("released during the wait: %v", err)
+	}
+	l.Close()
+	if TeardownWait < 26*time.Second {
+		t.Fatalf("TeardownWait %v is shorter than the longest teardown (20 s + 1 s + 5 s)", TeardownWait)
+	}
+	// The user lock follows the same rule, and is for ONE service: held, it is
+	// refused after the grace.
+	u, err := AcquireUIDLock(root, 32011)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer u.Close()
+	if _, err := bounded(func() (*Lock, error) { return AcquireUIDLockWait(root, 32011, 100*time.Millisecond) }); !errors.Is(err, ErrBusy) {
+		t.Fatalf("user lock held: %v", err)
+	}
+}
+
+// An error other than ErrBusy is not waited on.
+func TestWaitForReturnsOtherErrorsAtOnce(t *testing.T) {
+	boom := errors.New("boom")
+	var calls atomic.Int32
+	t0 := time.Now()
+	done := make(chan error, 1)
+	go func() {
+		_, err := waitFor(5*time.Second, func() (*Lock, error) { calls.Add(1); return nil, boom })
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != boom || calls.Load() != 1 || time.Since(t0) > time.Second {
+			t.Fatalf("err %v calls %d after %v", err, calls.Load(), time.Since(t0))
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a failure that is not ErrBusy was waited on")
+	}
+}
+
+// A wait that never succeeds ends at its bound, with the last error; a loop
+// that did not end would stop the suite, so it is cut short here.
+func TestWaitForEndsAtItsBound(t *testing.T) {
+	done := make(chan error, 1)
+	go func() {
+		_, err := waitFor(150*time.Millisecond, func() (*Lock, error) { return nil, ErrBusy })
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrBusy) {
+			t.Fatalf("err %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the wait did not end at its bound")
 	}
 }
 

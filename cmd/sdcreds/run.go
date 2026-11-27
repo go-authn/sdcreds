@@ -29,17 +29,42 @@ var (
 	errClassOS       = errors.New("--class exists on OpenBSD only")
 	errNotExecutable = errors.New("PROGRAM cannot be executed by the target user")
 	errMissingFlag   = errors.New("missing required flag")
+	errPassOS        = errors.New("--pass-env and --pass-fd exist on OpenBSD only")
 )
 
-// refusal is a validation failure: the exit status is 2.
+// refusal is a validation failure: the exit status is exitRefused.
 type refusal struct{ err error }
 
 func (r *refusal) Error() string { return "refused: " + r.err.Error() }
 func (r *refusal) Unwrap() error { return r.err }
 
-// exitRefused is the exit status of a refusal; 1 stays for other failures and
-// the daemon's own status is passed through.
-const exitRefused = 2
+// Exit statuses of sdcreds' own endings, reserved so that a supervisor can tell
+// them from the daemon's, whose status is passed through (a signal is 128+n).
+// They are the two just under the shell's 127 and the 128+n signal range, the
+// way env(1) reserves 125-127, and outside the 0-2 and sysexits 64-78 ranges
+// daemons commonly use. 70 (release failed) stays, see exitReleaseFailed.
+const (
+	// exitRefused: a refusal. Nothing was started; retrying without a change is
+	// pointless (a permanent condition, such as unencrypted swap).
+	exitRefused = 125
+	// exitFailed: sdcreds failed after it began (delivery, helper, exec of the
+	// program). The program may have run; this may be transient.
+	exitFailed = 126
+)
+
+// runFailure is an error that ends `sdcreds run` (or its stub) with exitFailed.
+type runFailure struct{ err error }
+
+func (r *runFailure) Error() string { return r.err.Error() }
+func (r *runFailure) Unwrap() error { return r.err }
+
+// failed wraps a non-nil error as a runFailure.
+func failed(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &runFailure{err}
+}
 
 // Seams for the tests.
 var (
@@ -57,6 +82,8 @@ type runFlags struct {
 	secret, machineIDFile              string
 	allowNull, check                   bool
 	keepCap                            []string
+	passEnv                            []string
+	passFD                             []int
 }
 
 // runPlan is the result of plan: everything the flow needs, judged.
@@ -101,9 +128,18 @@ func plan(f runFlags, argv []string) (*runPlan, error) {
 		if len(f.keepCap) > 0 {
 			return nil, &refusal{errKeepCapOS}
 		}
+		if err := checkPassEnv(f.passEnv); err != nil {
+			return nil, &refusal{err}
+		}
+		if err := checkPassFDs(f.passFD); err != nil {
+			return nil, &refusal{err}
+		}
 	default:
 		if f.class != "" {
 			return nil, &refusal{errClassOS}
+		}
+		if len(f.passEnv) > 0 || len(f.passFD) > 0 {
+			return nil, &refusal{errPassOS}
 		}
 		keep, err := s6.ParseKeepCaps(f.keepCap)
 		if err != nil {
@@ -234,7 +270,10 @@ func runCmd() *cobra.Command {
 			"class (cputime, filesize, datasize, stacksize, coredumpsize, memoryuse, memorylocked,\n" +
 			"maxproc, openfiles) from /etc/login.conf and /etc/login.conf.d are applied to the\n" +
 			"program; nothing else of the class is. The program's environment is only LANG, LC_*,\n" +
-			"TZ, TERM, a fixed PATH and CREDENTIALS_DIRECTORY. On Linux this is s6-run with the\n" +
+			"TZ, TERM, a fixed PATH and CREDENTIALS_DIRECTORY, plus the --pass-env names, and its\n" +
+			"descriptors are 0-2 plus the --pass-fd ones (NOTIFY_SOCKET and LISTEN_FDS need both).\n" +
+			"Exit status: the program's own (128+n for a signal), except 125 sdcreds refused (nothing\n" +
+			"started), 126 sdcreds failed, 70 the release failed. On Linux this is s6-run with the\n" +
 			"same flags.",
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -256,7 +295,7 @@ func runCmd() *cobra.Command {
 				osExit(exitRefused)
 				return nil
 			}
-			return err
+			return failed(err)
 		},
 	}
 	fl := cmd.Flags()
@@ -269,6 +308,8 @@ func runCmd() *cobra.Command {
 	fl.StringVar(&f.machineIDFile, "machine-id-file", "", "machine id file instead of sysctl hw.uuid (OpenBSD) or /etc/machine-id")
 	fl.BoolVar(&f.allowNull, "allow-null", false, "accept credentials sealed with the null key (no secrecy)")
 	fl.StringArrayVar(&f.keepCap, "keep-cap", nil, "Linux only: capability PROGRAM keeps (see s6-run)")
+	fl.StringArrayVar(&f.passEnv, "pass-env", nil, "OpenBSD only: environment variable NAME handed to PROGRAM as it is (repeatable; refused for PATH, CREDENTIALS_DIRECTORY and __SDCREDS_*; not passed when unset)")
+	fl.IntSliceVar(&f.passFD, "pass-fd", nil, "OpenBSD only: descriptor N (4 or more, open and not close-on-exec) kept open in PROGRAM at the same number (repeatable)")
 	fl.BoolVar(&f.check, "check", false, "run every refusal, decrypt nothing, start nothing")
 	return cmd
 }
