@@ -89,11 +89,36 @@ func TestARunningChildIsKilledAtTheDeadline(t *testing.T) {
 func TestAFailedWatchKillsTheChild(t *testing.T) {
 	boom := errors.New("boom")
 	var killed atomic.Bool
-	err := run(exec.Command("sleep", "60"), time.Minute,
-		func(int) (<-chan struct{}, error) { return nil, boom },
-		func(p *os.Process) error { killed.Store(true); return p.Kill() },
+	res := make(chan error, 1)
+	go func() {
+		res <- run(exec.Command("sleep", "60"), time.Minute,
+			func(int) (<-chan struct{}, error) { return nil, boom },
+			func(p *os.Process) error { killed.Store(true); return p.Kill() },
+			(*exec.Cmd).Wait)
+	}()
+	select {
+	case err := <-res:
+		if !errors.Is(err, boom) || !killed.Load() {
+			t.Fatalf("%v killed=%v", err, killed.Load())
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("a failed watch left the run waiting for an exit nobody observes")
+	}
+}
+
+// A command that cannot start is reported, and nothing is watched.
+func TestAStartFailureIsReported(t *testing.T) {
+	watched := false
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("a command that never started was used: %v", r)
+		}
+	}()
+	err := run(exec.Command("/nonexistent/sdcreds-no-such-binary"), time.Minute,
+		func(int) (<-chan struct{}, error) { watched = true; return nil, nil },
+		func(p *os.Process) error { return p.Kill() },
 		(*exec.Cmd).Wait)
-	if !errors.Is(err, boom) || !killed.Load() {
-		t.Fatalf("%v killed=%v", err, killed.Load())
+	if err == nil || watched {
+		t.Fatalf("err=%v watched=%v", err, watched)
 	}
 }
