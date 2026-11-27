@@ -112,6 +112,8 @@ jobs:
             sudo -n install -d -o root -g wheel -m 755 /usr/local/libexec/sdcreds-ci
             sudo -n install -o root -g wheel -m 755 obsd/sdcreds /usr/local/libexec/sdcreds-ci/sdcreds
             chmod 755 obsd/run.test obsd/delivery.test
+            # The killer user, an install requirement of the release (it owns no process).
+            sudo -n useradd -s /sbin/nologin -d /var/empty -c "sdcreds killer" _sdkill
             # Each test binary runs from its own package directory: the tests read
             # files (the embedded images, testdata) by a path relative to it.
             bin=$PWD/obsd
