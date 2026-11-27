@@ -354,9 +354,34 @@ func TestRunRefusesABusyService(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer l.Close()
+	old := lockWait
+	lockWait = 300 * time.Millisecond
+	defer func() { lockWait = old }()
 	e.program(`exit 0`)
 	_, se, code := e.result()
 	if code != exitRefused || !strings.Contains(se, "already running") {
+		t.Errorf("exit %d: %s", code, se)
+	}
+}
+
+// F6: a restart that comes while the run before it is still tearing down (its
+// lock is held) waits for it instead of being refused.
+func TestRunWaitsForATeardownInProgress(t *testing.T) {
+	e := newVM(t)
+	if err := delivery.EnsureBase(e.base); err != nil {
+		t.Fatal(err)
+	}
+	l, err := delivery.AcquireLock(e.base, "web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { time.Sleep(400 * time.Millisecond); l.Close() }()
+	old := lockWait
+	lockWait = 20 * time.Second
+	defer func() { lockWait = old }()
+	e.program(`exit 0`)
+	_, se, code := e.result()
+	if code != 0 {
 		t.Errorf("exit %d: %s", code, se)
 	}
 }

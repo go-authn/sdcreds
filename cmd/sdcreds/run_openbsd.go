@@ -34,6 +34,12 @@ var hwUUID = func() ([16]byte, error) {
 
 func init() { runFlow = openbsdFlow }
 
+// The waits of a start, seams for the tests.
+var (
+	lockWait    = delivery.TeardownWait
+	uidLockWait = delivery.UIDLockGrace
+)
+
 // swapEncrypt is `sysctl vm.swapencrypt.enable`; a seam for the tests. A kernel
 // without the variable (ENOENT) is an error, not "encrypted": sysctl(2) of
 // OpenBSD 8.0 documents SWPENC_ENABLE as an existing node (1 enables, 0
@@ -120,7 +126,11 @@ func openbsdFlow(cmd *cobra.Command, p *runPlan) error {
 	if err := delivery.EnsureBase(p.base); err != nil {
 		return err
 	}
-	lock, err := delivery.AcquireLock(p.base, p.service)
+	// A restart races the teardown of the run before it (its helper holds the
+	// locks until the user's processes are killed and the mount is gone): wait for
+	// the lock of THIS service, bounded by delivery.TeardownWait, instead of
+	// refusing. A run that is still alive after that is refused as before.
+	lock, err := delivery.AcquireLockWait(p.base, p.service, lockWait)
 	if errors.Is(err, delivery.ErrBusy) {
 		return &refusal{err}
 	}
@@ -133,7 +143,10 @@ func openbsdFlow(cmd *cobra.Command, p *runPlan) error {
 	if err := delivery.EnsureBase(delivery.DefaultBase); err != nil {
 		return err
 	}
-	uidLock, err := delivery.AcquireUIDLock(delivery.DefaultBase, p.uid)
+	// Holding the service lock, the run before this one is gone: only the instant
+	// between its two lock closes is waited for. Another service on the same user
+	// stays refused.
+	uidLock, err := delivery.AcquireUIDLockWait(delivery.DefaultBase, p.uid, uidLockWait)
 	if errors.Is(err, delivery.ErrBusy) {
 		return &refusal{err}
 	}
@@ -199,12 +212,12 @@ func runStub(cmd *cobra.Command, p *runPlan, d *delivery.Delivery, self, limits 
 		groups[i] = uint32(g)
 	}
 	c := exec.Command(self, append([]string{stubCommand, "--", p.program}, p.args...)...)
-	c.Env = stubEnv(os.Environ(), d.Dir)
+	c.Env = stubEnv(os.Environ(), d.Dir, p.passEnv...)
 	if limits != "" {
 		c.Env = append(c.Env, rlimitEnv+"="+limits)
 	}
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
-	c.ExtraFiles = []*os.File{gr}
+	c.ExtraFiles = stubFiles(gr, p.passFD, &c.Env)
 	c.SysProcAttr = &syscall.SysProcAttr{
 		Setsid:     true,
 		Credential: &syscall.Credential{Uid: uint32(p.uid), Gid: uint32(p.gid), Groups: groups},

@@ -197,8 +197,37 @@ unchanged; the interop test reads `/proc/self/status` of the service and of
 decrypts the sealed files of `--source`, makes them visible to the program as read-only files
 owned by `--user` under `$CREDENTIALS_DIRECTORY`, runs it as that user and removes them when it
 ends. On Linux it is `s6-run` with the same flags. `--check` runs every refusal and decrypts
-nothing (use it in an rc.d `rc_pre`). A refusal exits with status 2 and happens before the host
-key is read.
+nothing (use it in an rc.d `rc_pre`). A refusal happens before the host key is read.
+
+**Exit status of `sdcreds run`** (v0.4.0). The program's own status is passed through (a program
+killed by signal `n` gives `128+n`). sdcreds' own endings have reserved statuses, outside the
+0-2 and sysexits 64-78 ranges daemons commonly use, so a supervisor can tell them from the
+program's:
+
+| Status | Meaning |
+|---|---|
+| 125 | sdcreds **refused**: nothing was started (bad flag, unknown or root user, unencrypted swap, a run that is alive). Permanent until something changes: do not retry blindly. |
+| 126 | sdcreds **failed** after it began (delivery, helper lost, the program could not be executed). May be transient. |
+| 70 | the program ended but the **release** failed (processes or mount may be left). |
+
+A program that itself exits 125 or 126 cannot be told apart from these; avoid them. Before v0.4.0
+a refusal exited 2 and a failure 1.
+
+**Restart.** A start waits up to 30 s for the previous run of the same service to finish
+tearing down (its helper holds the lock until the user's processes are killed and the
+mount is gone, which can take up to 26 s) instead of being refused. A run that is still alive after
+30 s is refused (125). A second service for the same user is still refused at once.
+
+**Passing the environment and descriptors (OpenBSD).** By default the program gets only `LANG`,
+`LC_*`, `TZ`, `TERM`, a fixed `PATH`, `CREDENTIALS_DIRECTORY` and descriptors 0-2. `--pass-env
+NAME` (repeatable) hands the variable `NAME` of sdcreds' own environment to the program as it
+is (not passed when unset); `--pass-fd N` (repeatable) keeps descriptor `N` open in the
+program at the same number. Both are refused for what sdcreds owns: `PATH`,
+`CREDENTIALS_DIRECTORY`, `__SDCREDS_*`; descriptors 0-3; a descriptor that is not open, or that
+is close-on-exec (those are sdcreds' own). A supervisor that starts a notify-type
+service passes `--pass-env NOTIFY_SOCKET --pass-env LISTEN_FDS --pass-env LISTEN_PID --pass-fd 4`
+(for example). `LISTEN_PID` is passed as it is: it names the pid the caller expected, not the
+program's.
 
 On OpenBSD the files live in a memory file system (MFS) mounted for the service, zeroed at the
 end. What to know:
@@ -216,11 +245,11 @@ end. What to know:
   holds the service lock and watches sdcreds; on any end it kills everything the service user
   runs (by uid, so a program that called setsid does not escape) and then unmounts. The kill is
   decided by root, not by a process running as the service user: the helper reads the kernel
-  process table for the REAL uid, stops every process it finds (a stopped process
+  process table for the REAL, EFFECTIVE or SAVED uid (the same set the start check counts), stops
+  every process it finds (a stopped process
   cannot fork or signal), reads the table again until it no longer changes, then sends SIGKILL, and
-  repeats until the user has no process. A process whose effective uid only is the service
-  user's (a set-uid program of that user, run by someone else) is counted as "busy", so the start
-  is refused, but it is not killed. A pid that was stopped and then no longer names the same process
+  repeats until the user has no process. A set-uid program of that user, run by someone else, is
+  therefore killed too (before v0.4.0 it was counted as "busy" but survived the release, and refused every later start). A pid that was stopped and then no longer names the same process
   (same pid and start time) is resumed, never killed. The helper's first move, a `kill(-1)` from
   a process running as the user, is best effort and is not limited to the real uid. A program that signals everything of its user in a loop
   therefore does not stop it. When a process survives the budget (20 s), the helper still unmounts

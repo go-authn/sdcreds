@@ -36,15 +36,14 @@ func giveUpAfter(d time.Duration, f func()) bool {
 // procOps is what the root-side kill needs from the system; the tests give it a
 // scripted process table.
 type procOps struct {
-	// list returns the live processes whose real or effective uid is uid: what
-	// makes a start refuse.
-	list func(uid int) ([]proc, error)
-	// listReal returns those whose REAL uid is uid: what the kill goes by. A
-	// process of another user that has uid as its effective uid only is not killed.
-	listReal func(uid int) ([]proc, error)
-	signal   func(pid int, sig syscall.Signal) error
-	sleep    func(time.Duration)
-	now      func() time.Time
+	// list returns the live processes whose real, effective or saved uid is uid:
+	// what makes a start refuse AND what the kill goes by, so that a process that
+	// holds the user's rights by any of the three cannot outlive the release and
+	// block the next start.
+	list   func(uid int) ([]proc, error)
+	signal func(pid int, sig syscall.Signal) error
+	sleep  func(time.Duration)
+	now    func() time.Time
 }
 
 const (
@@ -81,7 +80,7 @@ func killAllOf(uid int, o procOps) error {
 		}
 	}
 	for {
-		pids, err := o.listReal(uid)
+		pids, err := o.list(uid)
 		if err != nil {
 			return fmt.Errorf("delivery: listing the processes of uid %d: %w", uid, err)
 		}
@@ -90,7 +89,7 @@ func killAllOf(uid int, o procOps) error {
 		}
 		for pass := 0; pass < stopPasses; pass++ {
 			send(pids, unix.SIGSTOP)
-			again, err := o.listReal(uid)
+			again, err := o.list(uid)
 			if err != nil {
 				return fmt.Errorf("delivery: listing the processes of uid %d: %w", uid, err)
 			}

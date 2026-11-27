@@ -29,14 +29,13 @@ type fakeTable struct {
 	protect   map[int]int // pid -> SIGKILLs it survives
 	listErr   error
 	sigErr    error
-	euidOnly  map[int]bool // listed by list, not by listReal
 	starts    map[int]uint64
 	// onStop, when set, runs after pid is sent SIGSTOP: a test makes the pid
 	// change hands there.
 	onStop func(pid int)
 }
 
-func (f *fakeTable) listAll(real bool) ([]proc, error) {
+func (f *fakeTable) listAll() ([]proc, error) {
 	if f.listErr != nil {
 		return nil, f.listErr
 	}
@@ -56,16 +55,13 @@ func (f *fakeTable) listAll(real bool) ([]proc, error) {
 	}
 	var out []proc
 	for p := range f.live {
-		if real && f.euidOnly[p] {
-			continue
-		}
 		out = append(out, proc{pid: p, start: f.starts[p]})
 	}
 	return out, nil
 }
 
 func newTable(pids ...int) *fakeTable {
-	f := &fakeTable{live: map[int]bool{}, stopped: map[int]bool{}, clock: time.Unix(1000, 0), nextPID: 1000, protect: map[int]int{}, euidOnly: map[int]bool{}, starts: map[int]uint64{}}
+	f := &fakeTable{live: map[int]bool{}, stopped: map[int]bool{}, clock: time.Unix(1000, 0), nextPID: 1000, protect: map[int]int{}, starts: map[int]uint64{}}
 	for _, p := range pids {
 		f.live[p] = true
 	}
@@ -74,8 +70,7 @@ func newTable(pids ...int) *fakeTable {
 
 func (f *fakeTable) ops() procOps {
 	return procOps{
-		list:     func(uid int) ([]proc, error) { return f.listAll(false) },
-		listReal: func(uid int) ([]proc, error) { return f.listAll(true) },
+		list: func(uid int) ([]proc, error) { return f.listAll() },
 		signal: func(pid int, sig syscall.Signal) error {
 			f.sent = append(f.sent, sigName(sig)+":"+itoa(pid))
 			if f.sigErr != nil {
@@ -221,8 +216,8 @@ func TestKillAllOfTableErrors(t *testing.T) {
 	// An error on the second read, inside the freeze.
 	calls := 0
 	o := newTable(10).ops()
-	inner := o.listReal
-	o.listReal = func(uid int) ([]proc, error) {
+	inner := o.list
+	o.list = func(uid int) ([]proc, error) {
 		calls++
 		if calls == 2 {
 			return nil, boom
@@ -252,24 +247,21 @@ func TestKillAllOfNeverSignalsInitOrItself(t *testing.T) {
 	}
 }
 
-// T3: the kill goes by REAL uid; a process of another user that has the uid as
-// its effective uid only is counted by the busy check and is not signalled.
-func TestKillAllOfSignalsRealUIDOnly(t *testing.T) {
-	f := newTable(10, 11)
-	f.euidOnly[11] = true
-	if err := killAllOf(5000, f.ops()); err != nil {
+// F5: the kill goes by the same set as the start check (real, effective or saved
+// uid): a process that holds the uid by its effective or saved id only (a set-uid
+// file of that user run by another) is signalled too, so it cannot survive the
+// release and make every later start refuse.
+func TestKillAllOfSignalsEveryProcessTheStartCheckCounts(t *testing.T) {
+	f := newTable(10, 11, 12) // 11, 12: effective-only and saved-only holders
+	o := f.ops()
+	if err := killAllOf(5000, o); err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range f.sent {
-		if strings.HasSuffix(s, ":11") {
-			t.Fatalf("signalled the effective-uid-only process: %v", f.sent)
-		}
+	if len(f.live) != 0 {
+		t.Fatalf("survivors %v (sent %v)", f.live, f.sent)
 	}
-	if !f.live[11] || f.live[10] {
-		t.Fatalf("live %v", f.live)
-	}
-	if b, err := busyOf(5000, f.ops()); err != nil || !b {
-		t.Fatalf("the effective-uid-only process must still make the start refuse: %v %v", b, err)
+	if b, err := busyOf(5000, o); err != nil || b {
+		t.Fatalf("after the release the start check must pass: %v %v", b, err)
 	}
 }
 

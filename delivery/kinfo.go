@@ -45,6 +45,9 @@ const (
 	kinfoStatOff    = 304 // p_stat, int8
 	kinfoStartOff   = 408 // p_ustart_sec, uint64; p_ustart_usec uint32 follows
 	kinfoPSFlagsOff = 560 // p_psflags, uint32
+	// p_acflag (uint32) follows at 564, then p_svuid (uint32, "saved user id") and
+	// p_svgid: consecutive in sys/sys/sysctl.h (lines 483-486 of master).
+	kinfoSvUIDOff = kinfoPSFlagsOff + 2*4
 
 	psZombie = 0x00040000 // PS_ZOMBIE
 	sZomb    = 5          // SZOMB
@@ -62,7 +65,48 @@ type proc struct {
 const (
 	kernProcUID  = 5 // KERN_PROC_UID: by effective uid
 	kernProcRUID = 6 // KERN_PROC_RUID: by real uid
+	// kernProcAll is KERN_PROC_ALL (sysctl.2: argument "None"): every process. The
+	// kernel has no selector by SAVED uid, so those are found by reading them all.
+	kernProcAll = 0
 )
+
+// parseKinfoAll reads a KERN_PROC_ALL answer and returns the live processes whose
+// real, effective or saved uid is uid. Elements of other users are skipped (the
+// table is not selected by uid); a buffer that is not a whole number of elements
+// or a negative pid is the wrong layout and an error.
+func parseKinfoAll(buf []byte, uid int) ([]proc, error) {
+	if len(buf)%kinfoSize != 0 {
+		return nil, fmt.Errorf("delivery: the process table is %d bytes, not a multiple of %d: struct kinfo_proc is not the one expected", len(buf), kinfoSize)
+	}
+	n := len(buf) / kinfoSize
+	var pids []proc
+	for i := 0; i < n; i++ {
+		e := buf[i*kinfoSize : (i+1)*kinfoSize]
+		pid := int(int32(binary.NativeEndian.Uint32(e[kinfoPidOff:])))
+		if pid < 0 {
+			return nil, fmt.Errorf("delivery: element %d of the process table has pid %d: struct kinfo_proc is not the one expected", i, pid)
+		}
+		if pid == 0 {
+			continue // the kernel's own process
+		}
+		holds := false
+		for _, off := range []int{kinfoUIDOff, kinfoRUIDOf, kinfoSvUIDOff} {
+			if int(binary.NativeEndian.Uint32(e[off:])) == uid {
+				holds = true
+			}
+		}
+		if !holds {
+			continue
+		}
+		stat := int8(e[kinfoStatOff])
+		if stat == sZomb || stat == sDead || binary.NativeEndian.Uint32(e[kinfoPSFlagsOff:])&psZombie != 0 {
+			continue
+		}
+		start := binary.NativeEndian.Uint64(e[kinfoStartOff:])*1_000_000 + uint64(binary.NativeEndian.Uint32(e[kinfoStartOff+8:]))
+		pids = append(pids, proc{pid: pid, start: start})
+	}
+	return pids, nil
+}
 
 // parseKinfo reads the pids of a kern.proc answer of op for uid. Any element
 // whose uid does not match the selector, whose pid is not positive, or a buffer

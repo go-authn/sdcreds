@@ -571,6 +571,25 @@ func TestMainExitCode(t *testing.T) {
 	}
 }
 
+// F7: sdcreds' own endings have reserved statuses, apart from the usual daemon
+// ones (0-2, sysexits 64-78) and from 128+signal; the values are documented in
+// the README, so a change is a breaking one.
+func TestOwnExitStatusesAreReserved(t *testing.T) {
+	if exitRefused != 125 || exitFailed != 126 || exitReleaseFailed != 70 {
+		t.Fatalf("refused %d failed %d release %d", exitRefused, exitFailed, exitReleaseFailed)
+	}
+	// A failure of the stub (a gate that closes, no program) ends main with
+	// exitFailed, not with the 1 a daemon may return.
+	defer func(o func(int), a []string) { osExit, os.Args = o, a }(osExit, os.Args)
+	code := -1
+	osExit = func(c int) { code = c }
+	os.Args = []string{"sdcreds", stubCommand, "--"}
+	main()
+	if code != exitFailed {
+		t.Errorf("stub failure: exit %d", code)
+	}
+}
+
 // A null-key credential is refused by decrypt on every machine unless
 // --allow-null is given; no probe of the system admits it.
 func TestDecryptRefusesNullByDefault(t *testing.T) {

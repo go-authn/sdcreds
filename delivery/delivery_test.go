@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-authn/sdcreds"
 	"golang.org/x/sys/unix"
@@ -577,6 +578,48 @@ func TestAcquireLock(t *testing.T) {
 	}
 	if _, err := AcquireLock(filepath.Join(root, "missing"), "svc"); err == nil {
 		t.Fatal("lock in a missing directory")
+	}
+}
+
+// F6: a start waits, bounded, for the lock of a teardown in progress on the same
+// service, and still refuses a lock that stays held.
+func TestAcquireLockWaitsForATeardown(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("owner checks need an unprivileged user")
+	}
+	root := fakeTrust(t)
+	held, err := AcquireLock(root, "svc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// No wait: the old behaviour, refused at once.
+	if _, err := AcquireLockWait(root, "svc", 0); !errors.Is(err, ErrBusy) {
+		t.Fatalf("no wait: %v", err)
+	}
+	// Held past the bound: refused, after waiting about the bound.
+	t0 := time.Now()
+	if _, err := AcquireLockWait(root, "svc", 300*time.Millisecond); !errors.Is(err, ErrBusy) || time.Since(t0) < 250*time.Millisecond {
+		t.Fatalf("held past the bound: %v after %v", err, time.Since(t0))
+	}
+	// Released during the wait: acquired.
+	go func() { time.Sleep(200 * time.Millisecond); held.Close() }()
+	l, err := AcquireLockWait(root, "svc", 5*time.Second)
+	if err != nil {
+		t.Fatalf("released during the wait: %v", err)
+	}
+	l.Close()
+	if TeardownWait < 26*time.Second {
+		t.Fatalf("TeardownWait %v is shorter than the longest teardown (20 s + 1 s + 5 s)", TeardownWait)
+	}
+	// The user lock follows the same rule, and is for ONE service: held, it is
+	// refused after the grace.
+	u, err := AcquireUIDLock(root, 32011)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer u.Close()
+	if _, err := AcquireUIDLockWait(root, 32011, 100*time.Millisecond); !errors.Is(err, ErrBusy) {
+		t.Fatalf("user lock held: %v", err)
 	}
 }
 

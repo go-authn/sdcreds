@@ -86,6 +86,11 @@ const (
 
 // listKern returns the pids that sysctl kern.proc reports for one selector.
 func listKern(op, id int) ([]proc, error) {
+	return listKernWith(op, id, func(buf []byte) ([]proc, error) { return parseKinfo(buf, op, id) })
+}
+
+// listKernWith is listKern with the reading of the answer left to parse.
+func listKernWith(op, id int, parse func([]byte) ([]proc, error)) ([]proc, error) {
 	for count := procChunk; count <= procMax; count *= 2 {
 		buf, err := unix.SysctlRaw("kern.proc", op, id, kinfoSize, count)
 		if err != nil {
@@ -95,35 +100,40 @@ func listKern(op, id int) ([]proc, error) {
 		if n >= count {
 			continue // the table may be larger than the room asked for
 		}
-		return parseKinfo(buf, op, id)
+		return parse(buf)
 	}
 	return nil, errors.New("the process table is larger than the limit")
 }
 
-// listUID is every process whose real OR effective uid is uid: the real uid is
-// what the target's processes have; a program that runs with the target as its
-// effective uid only (a set-uid file of that user) is the same user to this
-// delivery.
+// listUID is every process whose real, effective OR saved uid is uid: the real
+// uid is what the target's processes have; a program that runs with the target
+// as its effective or saved uid only (a set-uid file of that user) is the same
+// user to this delivery. The start check and the kill both go by this set. The
+// kernel selects by real and effective uid; the saved uid is found by reading
+// every process (KERN_PROC_ALL).
 func listUID(uid int) ([]proc, error) {
 	var all []proc
-	for _, op := range []int{kernProcRUID, kernProcUID} {
-		ps, err := listKern(op, uid)
-		if err != nil {
-			return nil, err
-		}
+	add := func(ps []proc) {
 		for _, p := range ps {
 			if !containsPid(all, p.pid) {
 				all = append(all, p)
 			}
 		}
 	}
+	for _, op := range []int{kernProcRUID, kernProcUID} {
+		ps, err := listKern(op, uid)
+		if err != nil {
+			return nil, err
+		}
+		add(ps)
+	}
+	ps, err := listKernWith(kernProcAll, 0, func(buf []byte) ([]proc, error) { return parseKinfoAll(buf, uid) })
+	if err != nil {
+		return nil, err
+	}
+	add(ps)
 	return all, nil
 }
-
-// listRealUID is every process whose REAL uid is uid: what the kill goes by. A
-// process of another user that runs with this uid as its effective uid only is
-// counted by listUID (the start is refused) and is not killed.
-func listRealUID(uid int) ([]proc, error) { return listKern(kernProcRUID, uid) }
 
 func containsPid(s []proc, pid int) bool {
 	for _, x := range s {
@@ -149,11 +159,10 @@ func checkProcLayout() error {
 }
 
 var realProcs = procOps{
-	list:     listUID,
-	listReal: listRealUID,
-	signal:   func(pid int, sig syscall.Signal) error { return unix.Kill(pid, sig) },
-	sleep:    time.Sleep,
-	now:      time.Now,
+	list:   listUID,
+	signal: func(pid int, sig syscall.Signal) error { return unix.Kill(pid, sig) },
+	sleep:  time.Sleep,
+	now:    time.Now,
 }
 
 // UIDBusy reports whether the user has any process, read by root from the

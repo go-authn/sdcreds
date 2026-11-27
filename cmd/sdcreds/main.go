@@ -30,6 +30,11 @@ const MachineIDEnv = s6.MachineIDEnv
 func main() {
 	cmd := RootCmd()
 	if err := cmd.Execute(); err != nil {
+		var rf *runFailure
+		if errors.As(err, &rf) {
+			osExit(exitFailed)
+			return
+		}
 		osExit(1)
 	}
 }
