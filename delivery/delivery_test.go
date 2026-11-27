@@ -646,7 +646,10 @@ func TestWaitForReturnsOtherErrorsAtOnce(t *testing.T) {
 	var calls atomic.Int32
 	t0 := time.Now()
 	done := make(chan error, 1)
-	go func() { _, err := waitFor(5*time.Second, func() (*Lock, error) { calls.Add(1); return nil, boom }); done <- err }()
+	go func() {
+		_, err := waitFor(5*time.Second, func() (*Lock, error) { calls.Add(1); return nil, boom })
+		done <- err
+	}()
 	select {
 	case err := <-done:
 		if err != boom || calls.Load() != 1 || time.Since(t0) > time.Second {
