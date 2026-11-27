@@ -164,8 +164,41 @@ func TestStubHelperProcess(t *testing.T) {
 		t.Skip("helper process")
 	}
 	os.Unsetenv(stubHelperEnv)
-	err := execGate([]string{"--", "/bin/sh", "-c", script})
+	// The program is this binary again (a shell cannot be used: dash and ksh
+	// take one digit after >&).
+	err := execGate([]string{"--", os.Args[0], "-test.run=^TestStubProgram$"})
 	t.Fatal(err) // execGate returns only on failure
+}
+
+// stubProgramEnv names the two descriptors the program looks at: "PASSED,LEAKED".
+const stubProgramEnv = "SDCREDS_TEST_STUB_PROGRAM"
+
+// TestStubProgram is not a test: it is the program that the stub runs. It prints
+// what it was given, writes to the passed descriptor, and says LEAK if the
+// descriptor that was not named is open.
+func TestStubProgram(t *testing.T) {
+	fds := os.Getenv(stubProgramEnv)
+	if fds == "" {
+		t.Skip("helper process")
+	}
+	passed, leaked, _ := strings.Cut(fds, ",")
+	pfd, _ := strconv.Atoi(passed)
+	lfd, _ := strconv.Atoi(leaked)
+	get := func(name, def string) string {
+		if v, ok := os.LookupEnv(name); ok {
+			return v
+		}
+		return def
+	}
+	out := os.Stdout
+	io.WriteString(out, get("NOTIFY_SOCKET", "unset")+" "+get("LISTEN_FDS", "unset")+" "+get("LISTEN_PID", "unset")+" "+get("HOME", "unset")+" "+get("__SDCREDS_PASSFD", "gone")+"\n")
+	if _, err := unix.Write(pfd, []byte("passed\n")); err != nil {
+		io.WriteString(out, "passed descriptor: "+err.Error()+"\n")
+	}
+	if _, err := unix.FcntlInt(uintptr(lfd), unix.F_GETFD, 0); err == nil {
+		io.WriteString(out, "LEAK\n")
+	}
+	os.Exit(0)
 }
 
 // F2: NOTIFY_SOCKET and LISTEN_* work through the opt-in: the variables arrive,
@@ -200,10 +233,9 @@ func TestPassThroughReachesTheProgram(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := `echo "$NOTIFY_SOCKET $LISTEN_FDS $LISTEN_PID ${HOME-unset} ${__SDCREDS_PASSFD-gone}"; echo passed >&` +
-		strconv.Itoa(fd) + `; ( echo leaked >&` + strconv.Itoa(leakFD) + ` ) 2>/dev/null && echo LEAK; true`
 	c := exec.Command(os.Args[0], "-test.run=^TestStubHelperProcess$")
-	c.Env = append(stubEnv([]string{"NOTIFY_SOCKET=/run/n.sock", "LISTEN_FDS=1", "LISTEN_PID=42", "HOME=/root"}, "/creds", "NOTIFY_SOCKET", "LISTEN_FDS", "LISTEN_PID"), stubHelperEnv+"="+script)
+	c.Env = append(stubEnv([]string{"NOTIFY_SOCKET=/run/n.sock", "LISTEN_FDS=1", "LISTEN_PID=42", "HOME=/root"}, "/creds", "NOTIFY_SOCKET", "LISTEN_FDS", "LISTEN_PID"),
+		stubHelperEnv+"=1", stubProgramEnv+"="+strconv.Itoa(fd)+","+strconv.Itoa(leakFD))
 	files := stubFiles(gateR, []int{fd}, &c.Env)
 	// A descriptor that leaked into the stub and was not named.
 	for len(files) <= leakFD-3 {
