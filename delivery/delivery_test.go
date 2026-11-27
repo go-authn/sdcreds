@@ -598,8 +598,15 @@ func TestAcquireLockWaitsForATeardown(t *testing.T) {
 	}
 	// Held past the bound: refused, after waiting about the bound.
 	t0 := time.Now()
-	if _, err := AcquireLockWait(root, "svc", 300*time.Millisecond); !errors.Is(err, ErrBusy) || time.Since(t0) < 250*time.Millisecond {
-		t.Fatalf("held past the bound: %v after %v", err, time.Since(t0))
+	res := make(chan error, 1)
+	go func() { _, err := AcquireLockWait(root, "svc", 300*time.Millisecond); res <- err }()
+	select {
+	case err := <-res:
+		if !errors.Is(err, ErrBusy) || time.Since(t0) < 250*time.Millisecond {
+			t.Fatalf("held past the bound: %v after %v", err, time.Since(t0))
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the wait did not end at its bound")
 	}
 	// Released during the wait: acquired.
 	go func() { time.Sleep(200 * time.Millisecond); held.Close() }()
