@@ -67,29 +67,9 @@ jobs:
           go test -c -o /dev/null ./delivery/
           go test -c -o /dev/null ./cmd/sdcreds/
 
-  # 32-bit OpenBSD is refused: the mount layout is LP64 only. The build must FAIL,
-  # and say why (delivery/refuse_openbsd_32bit.go).
-  openbsd-32bit-refused:
-    name: openbsd/${{ matrix.arch }} is refused at build time
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: ["386", arm]
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
-        with:
-          go-version: "1.27"
-      # GOOS and GOARCH are set on the command, not in env: this configuration is
-      # expected NOT to compile, and a build scan must not count it as one that does.
-      - name: the build fails with the reason
-        run: |
-          if GOOS=openbsd GOARCH=${{ matrix.arch }} go build ./... >build.log 2>&1; then
-            echo "openbsd/${{ matrix.arch }} built: it must be refused"; exit 1
-          fi
-          cat build.log
-          grep -q "mfsArgsSize_144_and_the_mount_layout_are_LP64_only" build.log
+  # 32-bit OpenBSD is refused at build time (delivery/refuse_openbsd_32bit.go); the
+  # test TestOpenBSD32bitIsRefused (delivery/refuse32_test.go, run by the test lane)
+  # builds for openbsd/386 and openbsd/arm and asserts the build FAILS with the reason.
 
   # A real OpenBSD: the mount, the daemon's exit, SIGKILL of sdcreds (which must
   # kill the daemon and unmount), the sweep of a leftover and the uid 0 refusal.
