@@ -633,6 +633,24 @@ func TestWaitForReturnsOtherErrorsAtOnce(t *testing.T) {
 	}
 }
 
+// A wait that never succeeds ends at its bound, with the last error; a loop
+// that did not end would stop the suite, so it is cut short here.
+func TestWaitForEndsAtItsBound(t *testing.T) {
+	done := make(chan error, 1)
+	go func() {
+		_, err := waitFor(150*time.Millisecond, func() (*Lock, error) { return nil, ErrBusy })
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrBusy) {
+			t.Fatalf("err %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the wait did not end at its bound")
+	}
+}
+
 func TestAcquireLockRefusesUntrustedFiles(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("owner checks need an unprivileged user")
