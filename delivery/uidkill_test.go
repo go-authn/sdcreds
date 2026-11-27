@@ -261,9 +261,20 @@ func TestParseKillArgs(t *testing.T) {
 		"all ones":              {"kill", "32001", "4294967295", "32101"},
 		"target of the killer?": {"kill", "32100", "32100", "32100"},
 	} {
-		if _, _, _, err := parseKillArgs(args); err == nil {
-			t.Errorf("%s: accepted", name)
-		}
+		func() {
+			// A panic on a short list is a refusal that is not made: a failure.
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("%s: panic %v", name, r)
+				}
+			}()
+			if _, _, _, err := parseKillArgs(args); err == nil {
+				t.Errorf("%s: accepted", name)
+			}
+		}()
+	}
+	if _, _, _, err := parseKillArgs([]string{"kill", "32001", "32100"}); err == nil {
+		t.Error("too few: accepted")
 	}
 }
 
@@ -303,8 +314,16 @@ func TestLockKiller(t *testing.T) {
 		t.Fatal(err)
 	}
 	t0 := time.Now()
-	if _, err := lockKiller(p, 200*time.Millisecond); !errors.Is(err, ErrBusy) || time.Since(t0) < 150*time.Millisecond {
-		t.Fatalf("second killer: %v after %v", err, time.Since(t0))
+	// Bounded here, so that a wait that never ends is a failure, not a hang.
+	res := make(chan error, 1)
+	go func() { _, err := lockKiller(p, 200*time.Millisecond); res <- err }()
+	select {
+	case err := <-res:
+		if !errors.Is(err, ErrBusy) || time.Since(t0) < 150*time.Millisecond {
+			t.Fatalf("second killer: %v after %v", err, time.Since(t0))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the wait for the killer lock does not end at its bound")
 	}
 	// Released during the wait: the second one goes on.
 	var wg sync.WaitGroup
