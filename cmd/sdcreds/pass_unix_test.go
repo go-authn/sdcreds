@@ -91,6 +91,19 @@ func TestParsePassFDs(t *testing.T) {
 	}
 }
 
+// F7: a failure of the stub (no program) ends main with exitFailed, not with the
+// 1 a daemon may return.
+func TestStubFailureExitsWithTheReservedStatus(t *testing.T) {
+	defer func(o func(int), a []string) { osExit, os.Args = o, a }(osExit, os.Args)
+	code := -1
+	osExit = func(c int) { code = c }
+	os.Args = []string{"sdcreds", stubCommand, "--"}
+	main()
+	if code != exitFailed {
+		t.Errorf("stub failure: exit %d", code)
+	}
+}
+
 // stubHelperEnv makes this test binary act as the exec stub.
 const stubHelperEnv = "SDCREDS_TEST_STUB_SCRIPT"
 
