@@ -67,6 +67,31 @@ jobs:
           go test -c -o /dev/null ./delivery/
           go test -c -o /dev/null ./cmd/sdcreds/
 
+  # 32-bit OpenBSD is refused: the mount layout is LP64 only. The build must FAIL,
+  # and say why (delivery/refuse_openbsd_32bit.go).
+  openbsd-32bit-refused:
+    name: openbsd/${{ matrix.arch }} is refused at build time
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ["386", arm]
+    env:
+      GOOS: openbsd
+      GOARCH: ${{ matrix.arch }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.27"
+      - name: the build fails with the reason
+        run: |
+          if go build ./... >build.log 2>&1; then
+            echo "openbsd/${GOARCH} built: it must be refused"; exit 1
+          fi
+          cat build.log
+          grep -q "mfsArgsSize_144_and_the_mount_layout_are_LP64_only" build.log
+
   # A real OpenBSD: the mount, the daemon's exit, SIGKILL of sdcreds (which must
   # kill the daemon and unmount), the sweep of a leftover and the uid 0 refusal.
   # No secret is given to the VM; the host key it uses is made by the tests.

@@ -31,16 +31,18 @@ func goodConfig() Config {
 	}
 }
 
+type refusalCase struct {
+	name string
+	euid int
+	edit func(*Config)
+	want error
+}
+
 // Every refusal of validate has its own case, and none of them may reach the
 // Decrypt function: a counter proves it.
 func TestValidateRefusals(t *testing.T) {
 	long := strings.Repeat("a", 90)
-	cases := []struct {
-		name string
-		euid int
-		edit func(*Config)
-		want error
-	}{
+	cases := []refusalCase{
 		{"not root", 1000, func(*Config) {}, ErrNotRoot},
 		{"empty service", 0, func(c *Config) { c.Name = "" }, ErrBadName},
 		{"dot service", 0, func(c *Config) { c.Name = ".hidden" }, ErrBadName},
@@ -53,12 +55,7 @@ func TestValidateRefusals(t *testing.T) {
 		{"gid 0", 0, func(c *Config) { c.GID = 0 }, ErrRootTarget},
 		{"negative uid", 0, func(c *Config) { c.UID = -1 }, ErrBadID},
 		{"negative gid", 0, func(c *Config) { c.GID = -1 }, ErrBadID},
-		{"uid that wraps to 0", 0, func(c *Config) { c.UID = 1 << 32 }, ErrBadID},
-		{"gid that wraps to 0", 0, func(c *Config) { c.GID = 1 << 32 }, ErrBadID},
-		{"uid -1 as the kernel reads it", 0, func(c *Config) { c.UID = 0xFFFFFFFF }, ErrBadID},
-		{"gid -1 as the kernel reads it", 0, func(c *Config) { c.GID = 0xFFFFFFFF }, ErrBadID},
 		{"supplementary group 0", 0, func(c *Config) { c.Groups = []int{5, 0} }, ErrRootTarget},
-		{"supplementary group that wraps", 0, func(c *Config) { c.Groups = []int{1 << 32} }, ErrBadID},
 		{"too many groups", 0, func(c *Config) { c.Groups = make([]int, maxGroups+1) }, ErrBadID},
 		{"no decrypt", 0, func(c *Config) { c.Decrypt = nil }, ErrNoDecrypt},
 		{"too many", 0, func(c *Config) {
@@ -80,6 +77,7 @@ func TestValidateRefusals(t *testing.T) {
 			}
 		}, sdcreds.ErrTooLarge},
 	}
+	cases = append(cases, wideIDRefusals()...)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0
