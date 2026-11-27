@@ -76,18 +76,17 @@ jobs:
       fail-fast: false
       matrix:
         arch: ["386", arm]
-    env:
-      GOOS: openbsd
-      GOARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.27"
+      # GOOS and GOARCH are set on the command, not in env: this configuration is
+      # expected NOT to compile, and a build scan must not count it as one that does.
       - name: the build fails with the reason
         run: |
-          if go build ./... >build.log 2>&1; then
-            echo "openbsd/${GOARCH} built: it must be refused"; exit 1
+          if GOOS=openbsd GOARCH=${{ matrix.arch }} go build ./... >build.log 2>&1; then
+            echo "openbsd/${{ matrix.arch }} built: it must be refused"; exit 1
           fi
           cat build.log
           grep -q "mfsArgsSize_144_and_the_mount_layout_are_LP64_only" build.log
