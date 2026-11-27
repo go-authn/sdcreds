@@ -66,6 +66,7 @@ jobs:
         run: |
           go test -c -o /dev/null ./delivery/
           go test -c -o /dev/null ./cmd/sdcreds/
+          go test -c -o /dev/null ./internal/exitguard/
 
   # 32-bit OpenBSD is refused at build time (delivery/refuse_openbsd_32bit.go); the
   # test TestOpenBSD32bitIsRefused (delivery/refuse32_test.go, run by the test lane)
@@ -99,6 +100,7 @@ jobs:
           go build -o obsd/sdcreds ./cmd/sdcreds
           go test -c -o obsd/run.test ./cmd/sdcreds/
           go test -c -o obsd/delivery.test ./delivery/
+          go test -c -o obsd/exitguard.test ./internal/exitguard/
       - uses: cross-platform-actions/action@30cde56b87a128507bebea9531205087890ee360 # v1.8.0
         with:
           operating_system: openbsd
@@ -115,12 +117,13 @@ jobs:
             # the hwUUID seam (TestHostKey*); the test of the real sysctl skips there.
             sudo -n install -d -o root -g wheel -m 755 /usr/local/libexec/sdcreds-ci
             sudo -n install -o root -g wheel -m 755 obsd/sdcreds /usr/local/libexec/sdcreds-ci/sdcreds
-            chmod 755 obsd/run.test obsd/delivery.test
+            chmod 755 obsd/run.test obsd/delivery.test obsd/exitguard.test
             # The killer user, an install requirement of the release (it owns no process).
             sudo -n useradd -s /sbin/nologin -d /var/empty -c "sdcreds killer" _sdkill
             # Each test binary runs from its own package directory: the tests read
             # files (the embedded images, testdata) by a path relative to it.
             bin=$PWD/obsd
+            (cd internal/exitguard && sudo -n "$bin/exitguard.test" -test.v -test.timeout 5m)
             (cd delivery && sudo -n "$bin/delivery.test" -test.v -test.timeout 5m)
             (cd cmd/sdcreds && sudo -n env SDCREDS_BIN=/usr/local/libexec/sdcreds-ci/sdcreds "$bin/run.test" -test.v -test.timeout 5m)
 

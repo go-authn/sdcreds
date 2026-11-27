@@ -1,4 +1,4 @@
-package main
+package exitguard
 
 import (
 	"os"
@@ -11,17 +11,17 @@ import (
 // then is the child reaped. A signal forwarded while the reap runs (the window
 // in which the pid may already be somebody else's) must send nothing.
 func TestNoSignalIsSentOnceTheExitIsObserved(t *testing.T) {
-	var g stubGuard
+	var g Guard
 	var sent atomic.Int32
 	send := func(os.Signal) error { sent.Add(1); return nil }
 
 	exited := make(chan struct{})
 	close(exited)
 	reaped := false
-	err := reapAfterExit(exited, &g, func() error {
+	err := ReapAfterExit(exited, &g, func() error {
 		// The reap is under way: a forwarder racing it must find the guard shut.
-		if g.signal(send, syscall.SIGTERM) {
-			t.Error("a signal was sent while the stub was being reaped")
+		if g.Signal(send, syscall.SIGTERM) {
+			t.Error("a signal was sent while the child was being reaped")
 		}
 		reaped = true
 		return nil
@@ -34,11 +34,11 @@ func TestNoSignalIsSentOnceTheExitIsObserved(t *testing.T) {
 	}
 }
 
-func TestSignalIsForwardedWhileTheStubRuns(t *testing.T) {
-	var g stubGuard
+func TestSignalIsForwardedWhileTheChildRuns(t *testing.T) {
+	var g Guard
 	var got os.Signal
-	if !g.signal(func(s os.Signal) error { got = s; return nil }, syscall.SIGTERM) {
-		t.Fatal("a running stub got no signal")
+	if !g.Signal(func(s os.Signal) error { got = s; return nil }, syscall.SIGTERM) {
+		t.Fatal("a running child got no signal")
 	}
 	if got != syscall.SIGTERM {
 		t.Fatalf("forwarded %v, want SIGTERM", got)
@@ -46,11 +46,11 @@ func TestSignalIsForwardedWhileTheStubRuns(t *testing.T) {
 }
 
 func TestReapWaitsForTheObservedExit(t *testing.T) {
-	var g stubGuard
+	var g Guard
 	exited := make(chan struct{})
 	reaped := make(chan struct{})
 	go func() {
-		_ = reapAfterExit(exited, &g, func() error { close(reaped); return nil })
+		_ = ReapAfterExit(exited, &g, func() error { close(reaped); return nil })
 	}()
 	select {
 	case <-reaped:
@@ -59,7 +59,7 @@ func TestReapWaitsForTheObservedExit(t *testing.T) {
 	}
 	close(exited)
 	<-reaped
-	if g.signal(func(os.Signal) error { return nil }, syscall.SIGTERM) {
+	if g.Signal(func(os.Signal) error { return nil }, syscall.SIGTERM) {
 		t.Fatal("the guard is still open after the reap")
 	}
 }

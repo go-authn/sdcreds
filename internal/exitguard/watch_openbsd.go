@@ -1,17 +1,21 @@
-package main
+package exitguard
 
 import "golang.org/x/sys/unix"
 
-// watchExit closes the returned channel when the process pid exits, WITHOUT
+// WatchExit closes the returned channel when the process pid exits, WITHOUT
 // reaping it: a kqueue NOTE_EXIT is delivered while the process is still a
 // zombie, which holds its pid. pid must be a child of this process that nobody
 // has waited for yet. A process that is already gone (ESRCH) counts as exited.
-func watchExit(pid int) (<-chan struct{}, error) {
+func WatchExit(pid int) (<-chan struct{}, error) {
 	kq, err := unix.Kqueue()
 	if err != nil {
 		return nil, err
 	}
-	ev := unix.Kevent_t{Ident: uint64(pid), Filter: unix.EVFILT_PROC, Flags: unix.EV_ADD | unix.EV_ONESHOT, Fflags: unix.NOTE_EXIT}
+	// SetKevent sizes Ident for the architecture, so this package never makes a
+	// 32-bit build fail for a reason other than the refusal in delivery.
+	var ev unix.Kevent_t
+	unix.SetKevent(&ev, pid, unix.EVFILT_PROC, unix.EV_ADD|unix.EV_ONESHOT)
+	ev.Fflags = unix.NOTE_EXIT
 	exited := make(chan struct{})
 	if _, err := unix.Kevent(kq, []unix.Kevent_t{ev}, nil, nil); err != nil {
 		unix.Close(kq)

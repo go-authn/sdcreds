@@ -35,6 +35,13 @@ var (
 	judgeChild = judgeIDs
 )
 
+// sendSignal delivers a forwarded signal to the service. It must be
+// os.Process.Signal: that refuses (os.ErrProcessDone) once the service has been
+// reaped, through its pidfd or, where pidfd is unavailable, through a done flag
+// that is set before the reap, so a signal never reaches a reused pid. It is a
+// variable only so that a test can observe the call.
+var sendSignal = func(p *os.Process, s os.Signal) error { return p.Signal(s) }
+
 // start forks the service from a thread of its own that has dropped the
 // privileges and joined the mount namespace of the caller. The caller keeps
 // root and its mounts. Go reports a failed exec through a close-on-exec pipe,
@@ -102,7 +109,7 @@ func startWith(sigs <-chan os.Signal, stop func(), u User, argv, env []string) (
 			for {
 				select {
 				case s := <-sigs:
-					_ = cmd.Process.Signal(s)
+					_ = sendSignal(cmd.Process, s)
 				case <-fin:
 					return
 				}

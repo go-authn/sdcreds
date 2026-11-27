@@ -1,11 +1,33 @@
-package main
+package exitguard
 
 import (
+	"errors"
 	"os/exec"
 	"syscall"
 	"testing"
 	"time"
 )
+
+// Run with the real watch: a child that ends by itself is not killed and its
+// status is returned; one that outlives the deadline is killed.
+func TestRunWithTheRealWatch(t *testing.T) {
+	if err := Run(exec.Command("true"), time.Minute); err != nil {
+		t.Fatalf("a child that exits 0: %v", err)
+	}
+	err := Run(exec.Command("false"), time.Minute)
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || ee.ExitCode() != 1 {
+		t.Fatalf("a child that exits 1: %v", err)
+	}
+	start := time.Now()
+	err = Run(exec.Command("sleep", "60"), 200*time.Millisecond)
+	if !errors.As(err, &ee) || ee.ExitCode() != -1 {
+		t.Fatalf("a child past the deadline: %v", err)
+	}
+	if d := time.Since(start); d > 10*time.Second {
+		t.Fatalf("took %v", d)
+	}
+}
 
 // The watch fires when the child exits, with nobody having reaped it: the zombie
 // still holds the pid, so a signal sent by it cannot reach another process.
@@ -14,7 +36,7 @@ func TestWatchExitFiresBeforeTheReap(t *testing.T) {
 	if err := c.Start(); err != nil {
 		t.Fatal(err)
 	}
-	exited, err := watchExit(c.Process.Pid)
+	exited, err := WatchExit(c.Process.Pid)
 	if err != nil {
 		_ = c.Process.Kill()
 		_ = c.Wait()
