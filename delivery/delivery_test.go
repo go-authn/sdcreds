@@ -623,6 +623,16 @@ func TestAcquireLockWaitsForATeardown(t *testing.T) {
 	}
 }
 
+// An error other than ErrBusy is not waited on.
+func TestWaitForReturnsOtherErrorsAtOnce(t *testing.T) {
+	boom := errors.New("boom")
+	calls := 0
+	t0 := time.Now()
+	if _, err := waitFor(5*time.Second, func() (*Lock, error) { calls++; return nil, boom }); err != boom || calls != 1 || time.Since(t0) > time.Second {
+		t.Fatalf("err %v calls %d after %v", err, calls, time.Since(t0))
+	}
+}
+
 func TestAcquireLockRefusesUntrustedFiles(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("owner checks need an unprivileged user")

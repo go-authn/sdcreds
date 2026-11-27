@@ -182,6 +182,10 @@ func TestRunRefusals(t *testing.T) {
 			func(e *runEnv) { userGroupIDs = func(*user.User) ([]string, error) { return nil, errGroups } },
 			func(e *runEnv) []string { return []string{"--", e.prog} }, errGroups},
 		{"keep-cap on openbsd", "openbsd", nil, func(e *runEnv) []string { return []string{"--keep-cap=CAP_NET_RAW", "--", e.prog} }, errKeepCapOS},
+		{"pass-env owned name", "openbsd", nil, func(e *runEnv) []string { return []string{"--pass-env=PATH", "--", e.prog} }, errPassEnvOwned},
+		{"pass-fd owned descriptor", "openbsd", nil, func(e *runEnv) []string { return []string{"--pass-fd=1", "--", e.prog} }, errPassFDOwned},
+		{"pass-env on linux", "linux", nil, func(e *runEnv) []string { return []string{"--pass-env=NOTIFY_SOCKET", "--", e.prog} }, errPassOS},
+		{"pass-fd on linux", "linux", nil, func(e *runEnv) []string { return []string{"--pass-fd=5", "--", e.prog} }, errPassOS},
 		{"class on linux", "linux", nil, func(e *runEnv) []string { return []string{"--class=staff", "--", e.prog} }, errClassOS},
 		{"bad capability", "linux", nil, func(e *runEnv) []string { return []string{"--keep-cap=CAP_SYS_ADMIN", "--", e.prog} }, nil},
 		{"not root", "openbsd", func(e *runEnv) { euid = func() int { return 1000 } },
@@ -260,6 +264,8 @@ func splitFlags(t *testing.T, args []string) (runFlags, []string) {
 	got.class, _ = fl.GetString("class")
 	got.base, _ = fl.GetString("base")
 	got.keepCap, _ = fl.GetStringArray("keep-cap")
+	got.passEnv, _ = fl.GetStringArray("pass-env")
+	got.passFD, _ = fl.GetIntSlice("pass-fd")
 	return got, rest
 }
 

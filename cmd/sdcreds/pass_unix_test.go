@@ -91,6 +91,55 @@ func TestParsePassFDs(t *testing.T) {
 	}
 }
 
+// With nothing to pass, stubFiles hands over the gate only and adds no variable.
+func TestStubFilesWithoutPassFDs(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	env := []string{"A=1"}
+	files := stubFiles(r, nil, &env)
+	if len(files) != 1 || files[0] != r || len(env) != 1 {
+		t.Errorf("files %v env %v", files, env)
+	}
+}
+
+// A malformed descriptor list reaching the stub stops it before the program
+// runs; a valid one keeps those descriptors (closeExcept), not closeFrom(3).
+func TestExecGateDescriptorList(t *testing.T) {
+	oldExec, oldGate, oldFrom, oldExcept, oldUmask, oldLimits := execProgram, gateFile, closeFrom, closeExcept, umask, limitsApply
+	t.Cleanup(func() {
+		execProgram, gateFile, closeFrom, closeExcept, umask, limitsApply = oldExec, oldGate, oldFrom, oldExcept, oldUmask, oldLimits
+	})
+	umask = func(int) {}
+	limitsApply = func([]classRlimit) error { return nil }
+	from, except, execed := 0, []int(nil), false
+	closeFrom = func(n int) { from = n }
+	closeExcept = func(n int, keep []int) { except = keep }
+	execProgram = func(string, []string, []string) error { execed = true; return errors.New("seam") }
+	feed := func() {
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		gateFile = func() *os.File { return r }
+		w.Write([]byte{goByte})
+		w.Close()
+	}
+	t.Setenv(passFDEnv, "x")
+	feed()
+	if err := execGate([]string{"--", "/bin/p"}); err == nil || execed || from != 0 || except != nil {
+		t.Errorf("bad list: err=%v execed=%v", err, execed)
+	}
+	t.Setenv(passFDEnv, "5,9")
+	feed()
+	if err := execGate([]string{"--", "/bin/p"}); err == nil || !execed || from != 0 || len(except) != 2 {
+		t.Errorf("good list: err=%v execed=%v from=%d except=%v", err, execed, from, except)
+	}
+}
+
 // F7: a failure of the stub (no program) ends main with exitFailed, not with the
 // 1 a daemon may return.
 func TestStubFailureExitsWithTheReservedStatus(t *testing.T) {
